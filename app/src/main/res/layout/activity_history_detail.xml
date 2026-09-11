@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+<LinearLayout
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:paddingTop="40dp"
+    android:paddingStart="16dp"
+    android:paddingEnd="16dp"
+    android:paddingBottom="16dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical">
+
+        <TextView
+            android:id="@+id/tvDetailName"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:textSize="22sp"
+            android:textStyle="bold"
+            android:text="Reading 1" />
+
+        <Button
+            android:id="@+id/btnOptions"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Options" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/tvDetailSubtitle"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textSize="13sp"
+        android:textColor="#757575"
+        android:layout_marginBottom="16dp" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Cleaned PPG waveform (full reading)"
+        android:textSize="12sp"
+        android:textStyle="bold" />
+
+    <com.eee312.ppgmonitor.ui.WaveformView
+        android:id="@+id/waveformFull"
+        android:layout_width="match_parent"
+        android:layout_height="160dp"
+        android:layout_marginTop="4dp"
+        android:layout_marginBottom="16dp" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="BPM over time"
+        android:textSize="12sp"
+        android:textStyle="bold" />
+
+    <com.eee312.ppgmonitor.ui.WaveformView
+        android:id="@+id/waveformBpm"
+        android:layout_width="match_parent"
+        android:layout_height="120dp"
+        android:layout_marginTop="4dp"
+        android:layout_marginBottom="16dp" />
+
+    <TextView
+        android:id="@+id/tvStats"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textSize="14sp" />
+
+</LinearLayout>
+</ScrollView>

@@ -45,6 +45,18 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <activity
+            android:name=".history.HistoryActivity"
+            android:exported="false"
+            android:label="History"
+            android:theme="@style/Theme.PPGMonitor" />
+
+        <activity
+            android:name=".history.HistoryDetailActivity"
+            android:exported="false"
+            android:label="Reading"
+            android:theme="@style/Theme.PPGMonitor" />
     </application>
 
 </manifest>

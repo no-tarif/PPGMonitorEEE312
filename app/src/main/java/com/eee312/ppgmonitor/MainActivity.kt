@@ -1,5 +1,6 @@
 package com.eee312.ppgmonitor
 
+import android.content.Intent
 import android.os.Bundle
 import android.os.SystemClock
 import android.view.View
@@ -10,9 +11,13 @@ import android.widget.RadioGroup
 import android.widget.Spinner
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import androidx.lifecycle.lifecycleScope
 import com.eee312.ppgmonitor.dataset.DatasetInfo
 import com.eee312.ppgmonitor.dataset.DatasetCatalog
 import com.eee312.ppgmonitor.dsp.PpgPipeline
+import com.eee312.ppgmonitor.history.HistoryActivity
+import com.eee312.ppgmonitor.history.SessionRecorder
+import com.eee312.ppgmonitor.history.SourceType
 import com.eee312.ppgmonitor.model.SensorSample
 import com.eee312.ppgmonitor.sensor.CsvDatasetSource
 import com.eee312.ppgmonitor.sensor.PlaybackSpeed
@@ -20,6 +25,10 @@ import com.eee312.ppgmonitor.sensor.SensorSource
 import com.eee312.ppgmonitor.sensor.SimulatedSensorSource
 import com.eee312.ppgmonitor.sensor.UsbSerialSensorSource
 import com.eee312.ppgmonitor.ui.WaveformView
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlin.math.sqrt
 
 /**
  * v1 scope, deliberately: PPG waveform + heart rate only, from a built-in
@@ -41,11 +50,19 @@ class MainActivity : AppCompatActivity() {
     private lateinit var rgSpeed: RadioGroup
     private lateinit var cbLoop: CheckBox
     private lateinit var btnStartStop: Button
+    private lateinit var btnHistory: Button
 
     private val pipeline = PpgPipeline()
     private var activeSource: SensorSource? = null
     private var running = false
     private var datasets: List<DatasetInfo> = emptyList()
+
+    // Every session is recorded automatically from Start to Stop (see
+    // SessionRecorder's header for why it discards sessions under ~15s
+    // and how it batches DB writes) - the same recorder instance is used
+    // no matter which SensorSource is active, so Simulated/Dataset/ESP32
+    // all land in the same history through the same path.
+    private var recorder: SessionRecorder? = null
 
     // Caps how often we actually touch views, independent of the active
     // source's sample rate. Every sample still goes through pipeline.process()
@@ -75,6 +92,7 @@ class MainActivity : AppCompatActivity() {
         rgSpeed = findViewById(R.id.rgSpeed)
         cbLoop = findViewById(R.id.cbLoop)
         btnStartStop = findViewById(R.id.btnStartStop)
+        btnHistory = findViewById(R.id.btnHistory)
 
         datasets = DatasetCatalog.load(applicationContext)
         spDataset.adapter = ArrayAdapter(
@@ -87,6 +105,9 @@ class MainActivity : AppCompatActivity() {
         btnStartStop.setOnClickListener {
             if (running) stopCurrentSource() else onStartClicked()
         }
+        btnHistory.setOnClickListener {
+            startActivity(Intent(this, HistoryActivity::class.java))
+        }
     }
 
     private fun updateDatasetPanelVisibility() {
@@ -95,6 +116,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun onStartClicked() {
+        val sourceType: SourceType
+        var datasetId: String? = null
         val source: SensorSource = when (rgSource.checkedRadioButtonId) {
             R.id.rbDataset -> {
                 if (datasets.isEmpty()) {
@@ -102,12 +125,20 @@ class MainActivity : AppCompatActivity() {
                     return
                 }
                 val info = datasets[spDataset.selectedItemPosition]
+                sourceType = SourceType.DATASET
+                datasetId = info.id
                 CsvDatasetSource(applicationContext, info, selectedSpeed(), cbLoop.isChecked)
             }
-            R.id.rbUsb -> UsbSerialSensorSource(applicationContext)
-            else -> SimulatedSensorSource()
+            R.id.rbUsb -> {
+                sourceType = SourceType.ESP32_USB
+                UsbSerialSensorSource(applicationContext)
+            }
+            else -> {
+                sourceType = SourceType.SIMULATED
+                SimulatedSensorSource()
+            }
         }
-        startWithSource(source)
+        startWithSource(source, sourceType, datasetId)
     }
 
     private fun selectedSpeed(): PlaybackSpeed = when (rgSpeed.checkedRadioButtonId) {
@@ -117,7 +148,7 @@ class MainActivity : AppCompatActivity() {
         else -> PlaybackSpeed.X1
     }
 
-    private fun startWithSource(source: SensorSource) {
+    private fun startWithSource(source: SensorSource, sourceType: SourceType, datasetId: String?) {
         pipeline.reset()
         waveformView.clear()
         tvRefHr.text = ""
@@ -125,6 +156,7 @@ class MainActivity : AppCompatActivity() {
         lastWaveformUpdateMs = 0L
         lastRefBpmUpdateMs = 0L
         activeSource = source
+        recorder = SessionRecorder(applicationContext, sourceType, datasetId, source.sampleRateHz)
         running = true
         btnStartStop.text = "Stop"
         setControlsEnabled(false)
@@ -153,7 +185,7 @@ class MainActivity : AppCompatActivity() {
         running = false
         btnStartStop.text = "Start"
         setControlsEnabled(true)
-        tvStatus.text = "Stopped"
+        finalizeRecording("Stopped")
     }
 
     /** A source (currently only [CsvDatasetSource]) ended on its own -
@@ -165,6 +197,31 @@ class MainActivity : AppCompatActivity() {
             running = false
             btnStartStop.text = "Start"
             setControlsEnabled(true)
+            finalizeRecording(null)
+        }
+    }
+
+    /** Ends the current recording (if any) and appends whether/what got
+     * saved to tvStatus, per spec: "tell the user on screen why nothing
+     * was saved" for sessions too short to keep. [baseStatus] overrides
+     * tvStatus's current text (e.g. "Stopped"); pass null to keep
+     * whatever the source's own onStatus callback already set. */
+    private fun finalizeRecording(baseStatus: String?) {
+        val rec = recorder
+        recorder = null
+        if (rec == null) {
+            baseStatus?.let { tvStatus.text = it }
+            return
+        }
+        baseStatus?.let { tvStatus.text = it }
+        lifecycleScope.launch {
+            val result = rec.finish()
+            val base = tvStatus.text.toString()
+            tvStatus.text = if (result != null) {
+                "$base · saved as ${result.name}"
+            } else {
+                "$base · too short to save (needs 15s+)"
+            }
         }
     }
 
@@ -182,6 +239,12 @@ class MainActivity : AppCompatActivity() {
     private fun handleSample(sample: SensorSample) {
         val out = pipeline.process(sample)
 
+        val accMagnitude = sqrt(
+            sample.accX.toDouble() * sample.accX + sample.accY.toDouble() * sample.accY +
+                sample.accZ.toDouble() * sample.accZ
+        )
+        recorder?.addSample(out.rawPpg, out.cleanedPpg, out.newHrBpm, out.sqi, accMagnitude)
+
         val now = SystemClock.elapsedRealtime()
         if (now - lastWaveformUpdateMs < minUiUpdateIntervalMs) return
         lastWaveformUpdateMs = now
@@ -198,5 +261,10 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         activeSource?.stop()
+        // Best-effort: if the activity is destroyed mid-session (no Stop
+        // tap), still try to flush/finalize on the recorder's own scope -
+        // it isn't tied to lifecycleScope, so this can outlive the
+        // activity, but there's no UI left to report back to.
+        recorder?.let { rec -> CoroutineScope(Dispatchers.IO).launch { rec.finish() } }
     }
 }
