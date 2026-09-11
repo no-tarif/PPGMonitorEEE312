@@ -14,3 +14,4 @@ build/
 *.ap_
 *.dex
 .kotlin/
+.claude/

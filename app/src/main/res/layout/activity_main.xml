@@ -1,7 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
-    android:layout_height="match_parent"
+    android:layout_height="match_parent">
+
+<LinearLayout
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
     android:orientation="vertical"
     android:padding="16dp">
 
@@ -13,6 +17,18 @@
         android:textSize="56sp"
         android:textStyle="bold"
         android:gravity="center"
+        android:layout_marginBottom="4dp" />
+
+    <TextView
+        android:id="@+id/tvRefHr"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text=""
+        android:textSize="14sp"
+        android:textStyle="bold"
+        android:textColor="#1565C0"
+        android:gravity="center"
+        android:visibility="gone"
         android:layout_marginBottom="4dp" />
 
     <TextView
@@ -34,8 +50,7 @@
         android:id="@+id/rgSource"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:gravity="center"
+        android:orientation="vertical"
         android:layout_marginBottom="8dp">
 
         <RadioButton
@@ -46,12 +61,81 @@
             android:checked="true" />
 
         <RadioButton
+            android:id="@+id/rbDataset"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Dataset" />
+
+        <RadioButton
             android:id="@+id/rbUsb"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="ESP32 (USB)"
-            android:layout_marginStart="24dp" />
+            android:text="ESP32 (USB)" />
     </RadioGroup>
+
+    <LinearLayout
+        android:id="@+id/datasetOptionsPanel"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:visibility="gone"
+        android:layout_marginBottom="8dp">
+
+        <Spinner
+            android:id="@+id/spDataset"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="8dp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Playback speed:"
+            android:textSize="12sp" />
+
+        <RadioGroup
+            android:id="@+id/rgSpeed"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginBottom="8dp">
+
+            <RadioButton
+                android:id="@+id/rb1x"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="1x"
+                android:checked="true" />
+
+            <RadioButton
+                android:id="@+id/rb2x"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="2x"
+                android:layout_marginStart="16dp" />
+
+            <RadioButton
+                android:id="@+id/rb4x"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="4x"
+                android:layout_marginStart="16dp" />
+
+            <RadioButton
+                android:id="@+id/rbFast"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Fast"
+                android:layout_marginStart="16dp" />
+        </RadioGroup>
+
+        <CheckBox
+            android:id="@+id/cbLoop"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Loop" />
+
+    </LinearLayout>
 
     <Button
         android:id="@+id/btnStartStop"
@@ -68,3 +152,4 @@
         android:layout_marginTop="12dp" />
 
 </LinearLayout>
+</ScrollView>
