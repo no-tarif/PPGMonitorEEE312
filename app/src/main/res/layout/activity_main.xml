@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="16dp">
+
+    <TextView
+        android:id="@+id/tvHr"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="-- BPM"
+        android:textSize="56sp"
+        android:textStyle="bold"
+        android:gravity="center"
+        android:layout_marginBottom="4dp" />
+
+    <TextView
+        android:id="@+id/tvSqi"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Signal quality: --"
+        android:textSize="14sp"
+        android:gravity="center"
+        android:layout_marginBottom="12dp" />
+
+    <com.eee312.ppgmonitor.ui.WaveformView
+        android:id="@+id/waveformView"
+        android:layout_width="match_parent"
+        android:layout_height="180dp"
+        android:layout_marginBottom="12dp" />
+
+    <RadioGroup
+        android:id="@+id/rgSource"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center"
+        android:layout_marginBottom="8dp">
+
+        <RadioButton
+            android:id="@+id/rbSimulated"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Simulated"
+            android:checked="true" />
+
+        <RadioButton
+            android:id="@+id/rbUsb"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="ESP32 (USB)"
+            android:layout_marginStart="24dp" />
+    </RadioGroup>
+
+    <Button
+        android:id="@+id/btnStartStop"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Start" />
+
+    <TextView
+        android:id="@+id/tvStatus"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Idle"
+        android:textSize="12sp"
+        android:layout_marginTop="12dp" />
+
+</LinearLayout>
