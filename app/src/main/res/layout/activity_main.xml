@@ -71,6 +71,12 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="ESP32 (USB)" />
+
+        <RadioButton
+            android:id="@+id/rbBle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="ESP32 (BLE)" />
     </RadioGroup>
 
     <LinearLayout

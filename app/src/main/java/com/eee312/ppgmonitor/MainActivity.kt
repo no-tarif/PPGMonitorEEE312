@@ -1,6 +1,9 @@
 package com.eee312.ppgmonitor
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
 import android.view.View
@@ -10,6 +13,7 @@ import android.widget.CheckBox
 import android.widget.RadioGroup
 import android.widget.Spinner
 import android.widget.TextView
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.eee312.ppgmonitor.dataset.DatasetInfo
@@ -19,6 +23,7 @@ import com.eee312.ppgmonitor.history.HistoryActivity
 import com.eee312.ppgmonitor.history.SessionRecorder
 import com.eee312.ppgmonitor.history.SourceType
 import com.eee312.ppgmonitor.model.SensorSample
+import com.eee312.ppgmonitor.sensor.BleSensorSource
 import com.eee312.ppgmonitor.sensor.CsvDatasetSource
 import com.eee312.ppgmonitor.sensor.PlaybackSpeed
 import com.eee312.ppgmonitor.sensor.SensorSource
@@ -77,6 +82,19 @@ class MainActivity : AppCompatActivity() {
     @Volatile private var lastWaveformUpdateMs = 0L
     @Volatile private var lastRefBpmUpdateMs = 0L
 
+    // BLE needs a runtime permission grant before BleSensorSource can be
+    // started - see blePermissionsNeeded(). Untested against real
+    // firmware (see BleSensorSource.kt's header), unlike the USB path.
+    private val requestBlePermissions = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { results ->
+        if (results.values.all { it }) {
+            startWithSource(BleSensorSource(applicationContext), SourceType.ESP32_BLE, null)
+        } else {
+            tvStatus.text = "Bluetooth permission denied - cannot use ESP32 (BLE) source"
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -116,29 +134,47 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun onStartClicked() {
-        val sourceType: SourceType
-        var datasetId: String? = null
-        val source: SensorSource = when (rgSource.checkedRadioButtonId) {
+        when (rgSource.checkedRadioButtonId) {
             R.id.rbDataset -> {
                 if (datasets.isEmpty()) {
                     tvStatus.text = "No bundled datasets found"
                     return
                 }
                 val info = datasets[spDataset.selectedItemPosition]
-                sourceType = SourceType.DATASET
-                datasetId = info.id
-                CsvDatasetSource(applicationContext, info, selectedSpeed(), cbLoop.isChecked)
+                startWithSource(
+                    CsvDatasetSource(applicationContext, info, selectedSpeed(), cbLoop.isChecked),
+                    SourceType.DATASET,
+                    info.id
+                )
             }
-            R.id.rbUsb -> {
-                sourceType = SourceType.ESP32_USB
-                UsbSerialSensorSource(applicationContext)
-            }
-            else -> {
-                sourceType = SourceType.SIMULATED
-                SimulatedSensorSource()
-            }
+            R.id.rbUsb -> startWithSource(UsbSerialSensorSource(applicationContext), SourceType.ESP32_USB, null)
+            R.id.rbBle -> onBleStartRequested()
+            else -> startWithSource(SimulatedSensorSource(), SourceType.SIMULATED, null)
         }
-        startWithSource(source, sourceType, datasetId)
+    }
+
+    /** BLE needs a permission check/request before it can start, unlike
+     * the other sources - everything after permission is granted goes
+     * through the same startWithSource() as any other source. */
+    private fun onBleStartRequested() {
+        val needed = blePermissionsNeeded()
+        if (needed.isEmpty()) {
+            startWithSource(BleSensorSource(applicationContext), SourceType.ESP32_BLE, null)
+        } else {
+            tvStatus.text = "Requesting Bluetooth permission..."
+            requestBlePermissions.launch(needed)
+        }
+    }
+
+    private fun blePermissionsNeeded(): Array<String> {
+        val candidates = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
+        } else {
+            arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+        return candidates.filter {
+            checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED
+        }.toTypedArray()
     }
 
     private fun selectedSpeed(): PlaybackSpeed = when (rgSpeed.checkedRadioButtonId) {

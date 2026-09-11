@@ -78,6 +78,59 @@ filter coefficients in `FilterCoefficients.kt` are rate-specific (25 Hz
 and 50 Hz are both precomputed there; anything else needs new
 coefficients generated offline, not guessed).
 
+## Example ESP32 sketch fragment
+
+Minimal sketch skeleton emitting the line format above at roughly 25 Hz
+(40 ms per sample) - swap `readIr()`/`readRed()`/`readAccel()` for your
+actual sensor reads:
+
+```cpp
+void setup() {
+  Serial.begin(115200);
+  // Give the USB-UART bridge a moment before the first line - avoids
+  // the phone side seeing a truncated/garbled first read.
+  delay(200);
+}
+
+void loop() {
+  static unsigned long lastSampleMs = 0;
+  const unsigned long periodMs = 40; // 25 Hz
+
+  unsigned long now = millis();
+  if (now - lastSampleMs < periodMs) return;
+  lastSampleMs = now;
+
+  int ir = readIr();
+  int red = readRed();
+  float accX, accY, accZ;
+  readAccel(&accX, &accY, &accZ);
+
+  Serial.print(ir);
+  Serial.print(',');
+  Serial.print(red);
+  Serial.print(',');
+  Serial.print(accX, 3);
+  Serial.print(',');
+  Serial.print(accY, 3);
+  Serial.print(',');
+  Serial.println(accZ, 3);
+}
+```
+
+Notes for whoever writes the real firmware:
+
+- Do all sensor reads before printing, then print the whole line in one
+  burst - printing field-by-field with reads interleaved risks a
+  partial line if something stalls mid-sample.
+- Don't `Serial.print` anything else once the stream starts (no debug
+  logging on the same UART) - `UsbSerialSensorSource.parseLine()` will
+  silently drop any line that isn't exactly 5 comma-separated numbers,
+  so stray text just becomes lost samples rather than a crash, but it's
+  still wasted bandwidth and confusing to debug.
+- Boot-log noise from the Arduino core itself (before `setup()` reaches
+  the code above) is fine - it arrives before the app starts reading
+  and/or gets dropped by the same malformed-line check.
+
 ## What's NOT decided yet (flag these with the firmware owner)
 
 1. Is the assumed `ir,red,accX,accY,accZ` field order and comma-separated

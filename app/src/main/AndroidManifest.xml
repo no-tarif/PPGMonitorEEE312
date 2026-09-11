@@ -19,9 +19,11 @@
 
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
 
-    <!-- ESP32 sensor link is wired USB serial (phone as USB host), not BLE -
-         see USB_SERIAL_CONTRACT.md. BLE permissions/feature above are kept
-         only because BleSensorSource.kt is retained as unused reference code. -->
+    <!-- Two ESP32 sensor link options: wired USB serial (phone as USB
+         host - see USB_SERIAL_CONTRACT.md) or BLE (see BLE_CONTRACT.md).
+         Both are reachable from the source selector; only USB has been
+         tried against real hardware so far - see BleSensorSource.kt's
+         header comment. -->
     <uses-feature android:name="android.hardware.usb.host" android:required="true" />
 
     <application
@@ -37,6 +39,7 @@
             android:name=".MainActivity"
             android:exported="true"
             android:label="@string/app_name"
+            android:launchMode="singleTop"
             android:theme="@style/Theme.PPGMonitor"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
@@ -44,6 +47,19 @@
 
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+
+            <!-- Lets Android bring this activity to the front when a
+                 matching ESP32 USB-serial adapter is plugged in, instead
+                 of only the generic "app can't handle USB device"
+                 behavior. singleTop above keeps this from spawning a
+                 second MainActivity (and losing an in-progress session)
+                 if the app is already open when that happens. -->
+            <intent-filter>
+                <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
+            </intent-filter>
+            <meta-data
+                android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
+                android:resource="@xml/device_filter" />
         </activity>
 
         <activity
