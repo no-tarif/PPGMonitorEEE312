@@ -1,0 +1,100 @@
+{
+  "datasets": [
+    {
+      "id": "s11_sit",
+      "displayName": "S11 \u2014 Sit",
+      "subject": "S11",
+      "activity": "sit",
+      "sampleRateHz": 25.0,
+      "durationSec": 487.2,
+      "sampleCount": 12180,
+      "sourcePlethChannel": "ir<-pleth_5 (SNR 0.64), red<-pleth_2 (SNR 0.50)",
+      "referenceHrBpm": 73.1,
+      "hasReferenceHrSeries": true
+    },
+    {
+      "id": "s11_walk",
+      "displayName": "S11 \u2014 Walk",
+      "subject": "S11",
+      "activity": "walk",
+      "sampleRateHz": 25.0,
+      "durationSec": 486.6,
+      "sampleCount": 12164,
+      "sourcePlethChannel": "ir<-pleth_2 (SNR 0.50), red<-pleth_5 (SNR 0.50)",
+      "referenceHrBpm": 83.8,
+      "hasReferenceHrSeries": true
+    },
+    {
+      "id": "s11_run",
+      "displayName": "S11 \u2014 Run",
+      "subject": "S11",
+      "activity": "run",
+      "sampleRateHz": 25.0,
+      "durationSec": 493.8,
+      "sampleCount": 12345,
+      "sourcePlethChannel": "ir<-pleth_2 (SNR 0.43), red<-pleth_1 (SNR 0.41)",
+      "referenceHrBpm": 87.8,
+      "hasReferenceHrSeries": true
+    },
+    {
+      "id": "s12_sit",
+      "displayName": "S12 \u2014 Sit",
+      "subject": "S12",
+      "activity": "sit",
+      "sampleRateHz": 25.0,
+      "durationSec": 485.9,
+      "sampleCount": 12148,
+      "sourcePlethChannel": "ir<-pleth_2 (SNR 5.59), red<-pleth_1 (SNR 4.13)",
+      "referenceHrBpm": 73.0,
+      "hasReferenceHrSeries": true
+    },
+    {
+      "id": "s12_walk",
+      "displayName": "S12 \u2014 Walk",
+      "subject": "S12",
+      "activity": "walk",
+      "sampleRateHz": 25.0,
+      "durationSec": 485.8,
+      "sampleCount": 12145,
+      "sourcePlethChannel": "ir<-pleth_2 (SNR 1.64), red<-pleth_5 (SNR 0.74)",
+      "referenceHrBpm": 87.9,
+      "hasReferenceHrSeries": true
+    },
+    {
+      "id": "s12_run",
+      "displayName": "S12 \u2014 Run",
+      "subject": "S12",
+      "activity": "run",
+      "sampleRateHz": 25.0,
+      "durationSec": 484.7,
+      "sampleCount": 12117,
+      "sourcePlethChannel": "ir<-pleth_2 (SNR 1.26), red<-pleth_4 (SNR 1.08)",
+      "referenceHrBpm": 90.2,
+      "hasReferenceHrSeries": true
+    },
+    {
+      "id": "hw_walk",
+      "displayName": "Hardware \u2014 Walk",
+      "subject": "hardware",
+      "activity": "unknown",
+      "sampleRateHz": 25.0,
+      "durationSec": 166.4,
+      "sampleCount": 4160,
+      "sourcePlethChannel": null,
+      "referenceHrBpm": null,
+      "hasReferenceHrSeries": false
+    },
+    {
+      "id": "hw_class1",
+      "displayName": "Hardware \u2014 Class 1",
+      "subject": "hardware",
+      "activity": "unknown",
+      "sampleRateHz": 25.0,
+      "durationSec": 237.0,
+      "sampleCount": 5925,
+      "sourcePlethChannel": null,
+      "referenceHrBpm": null,
+      "hasReferenceHrSeries": false
+    }
+  ]
+}
