@@ -9,6 +9,7 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.PopupMenu
 import android.widget.TextView
+import android.widget.ToggleButton
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -17,22 +18,31 @@ import com.eee312.ppgmonitor.R
 import com.eee312.ppgmonitor.dataset.DatasetCatalog
 import com.eee312.ppgmonitor.dsp.spo2.Spo2Config
 import com.eee312.ppgmonitor.dsp.spo2.Spo2SinglePointCalibration
+import com.eee312.ppgmonitor.ui.ChannelColors
+import com.eee312.ppgmonitor.ui.ChartBand
+import com.eee312.ppgmonitor.ui.ChartRefLine
+import com.eee312.ppgmonitor.ui.ChartSeries
+import com.eee312.ppgmonitor.ui.ChartVBand
+import com.eee312.ppgmonitor.ui.LineStyle
+import com.eee312.ppgmonitor.ui.TrendChartView
 import com.eee312.ppgmonitor.ui.WaveformView
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Locale
 
-/** Shows one saved reading: the full stored cleaned-PPG waveform and
- * BPM-over-time trend (both via WaveformView's static-overview mode -
- * see that class's header), plus summary stats including SpO2 and
- * recording-quality (Phase 3). Options button offers the same
- * rename/delete/export set as before, plus SpO2 calibration. */
+/** Shows one saved reading as a scrollable dashboard: summary stats,
+ * the cleaned-PPG waveform (with an optional raw IR/red overlay), BPM+
+ * SQI/SpO2/R/perfusion-index trends, and the six-check quality report -
+ * all sharing the same tSec time base. Options button offers rename/
+ * delete/export plus SpO2 calibration. */
 class HistoryDetailActivity : AppCompatActivity() {
 
     companion object {
         const val EXTRA_READING_ID = "reading_id"
+        private val DEFAULT_WARMUP_SEC = Spo2Config().warmupSec
     }
 
     private lateinit var tvName: TextView
@@ -41,11 +51,18 @@ class HistoryDetailActivity : AppCompatActivity() {
     private lateinit var tvSpo2: TextView
     private lateinit var tvQuality: TextView
     private lateinit var waveformFull: WaveformView
-    private lateinit var waveformBpm: WaveformView
+    private lateinit var btnToggleOverlay: ToggleButton
+    private lateinit var chartBpmSqi: TrendChartView
+    private lateinit var chartSpo2: TrendChartView
+    private lateinit var chartR: TrendChartView
+    private lateinit var chartPi: TrendChartView
+    private lateinit var qualityTable: LinearLayout
     private lateinit var btnOptions: Button
 
     private val db by lazy { AppDatabase.get(applicationContext) }
     private var reading: ReadingEntity? = null
+    private var overlayIr: FloatArray? = null
+    private var overlayRed: FloatArray? = null
 
     /** User picked a folder via SAF - <name>.csv, <name>_spo2_windows.csv
      * and <name>_summary.txt are all written into it. A single
@@ -68,19 +85,29 @@ class HistoryDetailActivity : AppCompatActivity() {
         tvName = findViewById(R.id.tvDetailName)
         tvSubtitle = findViewById(R.id.tvDetailSubtitle)
         tvStats = findViewById(R.id.tvStats)
+        tvSpo2 = findViewById(R.id.tvSpo2)
+        tvQuality = findViewById(R.id.tvQuality)
         waveformFull = findViewById(R.id.waveformFull)
-        waveformBpm = findViewById(R.id.waveformBpm)
+        btnToggleOverlay = findViewById(R.id.btnToggleOverlay)
+        chartBpmSqi = findViewById(R.id.chartBpmSqi)
+        chartSpo2 = findViewById(R.id.chartSpo2)
+        chartR = findViewById(R.id.chartR)
+        chartPi = findViewById(R.id.chartPi)
+        qualityTable = findViewById(R.id.qualityTable)
         btnOptions = findViewById(R.id.btnOptions)
         btnOptions.setOnClickListener { showOptionsMenu() }
-
-        // SpO2/quality summary text views aren't in the original layout
-        // (Phase 3 predates the Phase 4 dashboard rework) - added
-        // programmatically just below tvStats so this phase doesn't need
-        // to touch activity_history_detail.xml's structure yet.
-        val root = tvStats.parent as LinearLayout
-        val insertIndex = root.indexOfChild(tvStats) + 1
-        tvSpo2 = TextView(this).also { root.addView(it, insertIndex) }
-        tvQuality = TextView(this).also { root.addView(it, insertIndex + 1) }
+        btnToggleOverlay.isEnabled = false
+        btnToggleOverlay.setOnCheckedChangeListener { _, checked ->
+            val ir = overlayIr
+            val red = overlayRed
+            waveformFull.setOverlayData(
+                if (checked && ir != null && red != null) {
+                    listOf(ir to ChannelColors.IR, red to ChannelColors.RED)
+                } else {
+                    emptyList()
+                }
+            )
+        }
 
         val readingId = intent.getLongExtra(EXTRA_READING_ID, -1L)
         if (readingId < 0) {
@@ -105,10 +132,114 @@ class HistoryDetailActivity : AppCompatActivity() {
             bindHeader(r)
 
             val samples = withContext(Dispatchers.IO) { db.sampleDao().getForReading(readingId) }
+            val windows = withContext(Dispatchers.IO) { db.spo2WindowDao().getForReading(readingId) }
+
             waveformFull.setStaticData(FloatArray(samples.size) { samples[it].cleanedPpg.toFloat() })
 
-            val bpmPoints = samples.mapNotNull { it.bpm?.toFloat() }
-            if (bpmPoints.isNotEmpty()) waveformBpm.setStaticData(bpmPoints.toFloatArray())
+            if (samples.isNotEmpty() && samples.all { it.irRaw != null && it.redRaw != null }) {
+                overlayIr = FloatArray(samples.size) { samples[it].irRaw!!.toFloat() }
+                overlayRed = FloatArray(samples.size) { samples[it].redRaw!!.toFloat() }
+                btnToggleOverlay.isEnabled = true
+            }
+
+            bindBpmSqiChart(samples)
+            bindSpo2Chart(windows)
+            bindRChart(windows)
+            bindPiChart(windows)
+            bindQualityTable(r)
+        }
+    }
+
+    private fun bindBpmSqiChart(samples: List<SampleEntity>) {
+        val bpmXs = ArrayList<Float>()
+        val bpmYs = ArrayList<Float>()
+        val sqiXs = ArrayList<Float>()
+        val sqiYs = ArrayList<Float>()
+        for (s in samples) {
+            s.bpm?.let { bpmXs.add(s.tSec.toFloat()); bpmYs.add(it.toFloat()) }
+            s.sqi?.let { sqiXs.add(s.tSec.toFloat()); sqiYs.add(it.toFloat()) }
+        }
+        if (bpmXs.isEmpty()) return
+        chartBpmSqi.setData(
+            listOf(
+                ChartSeries(bpmXs.toFloatArray(), bpmYs.toFloatArray(), ChannelColors.BPM, LineStyle.SOLID, independentScale = true),
+                ChartSeries(sqiXs.toFloatArray(), sqiYs.toFloatArray(), ChannelColors.SQI, LineStyle.DASHED, independentScale = true)
+            )
+        )
+    }
+
+    private fun bindSpo2Chart(windows: List<Spo2WindowEntity>) {
+        if (windows.isEmpty()) return
+        val finite = windows.filter { it.spo2.isFinite() }
+        val xs = FloatArray(finite.size) { finite[it].tSec.toFloat() }
+        val ys = FloatArray(finite.size) { finite[it].spo2.toFloat() }
+        val filled = BooleanArray(finite.size) { finite[it].valid }
+        val warmupEnd = DEFAULT_WARMUP_SEC.toFloat()
+        chartSpo2.setData(
+            series = listOf(ChartSeries(xs, ys, ChannelColors.SPO2, LineStyle.SOLID, markerFilled = filled)),
+            yMin = 70f,
+            yMax = 105f,
+            vBands = listOf(ChartVBand(0f, warmupEnd)),
+            refLines = listOf(ChartRefLine(100f))
+        )
+    }
+
+    private fun bindRChart(windows: List<Spo2WindowEntity>) {
+        if (windows.isEmpty()) return
+        val finite = windows.filter { it.r.isFinite() }
+        if (finite.isEmpty()) return
+        val xs = FloatArray(finite.size) { finite[it].tSec.toFloat() }
+        val ys = FloatArray(finite.size) { finite[it].r.toFloat() }
+        chartR.setData(
+            series = listOf(ChartSeries(xs, ys, ChannelColors.SPO2, LineStyle.SOLID)),
+            hBands = listOf(ChartBand(0.4f, 1.0f))
+        )
+    }
+
+    private fun bindPiChart(windows: List<Spo2WindowEntity>) {
+        if (windows.isEmpty()) return
+        val finiteIr = windows.filter { it.piIr.isFinite() }
+        val finiteRed = windows.filter { it.piRed.isFinite() }
+        if (finiteIr.isEmpty() && finiteRed.isEmpty()) return
+        chartPi.setData(
+            series = listOf(
+                ChartSeries(
+                    FloatArray(finiteIr.size) { finiteIr[it].tSec.toFloat() },
+                    FloatArray(finiteIr.size) { (finiteIr[it].piIr * 100).toFloat() },
+                    ChannelColors.IR, LineStyle.SOLID
+                ),
+                ChartSeries(
+                    FloatArray(finiteRed.size) { finiteRed[it].tSec.toFloat() },
+                    FloatArray(finiteRed.size) { (finiteRed[it].piRed * 100).toFloat() },
+                    ChannelColors.RED, LineStyle.DASHED
+                )
+            )
+        )
+    }
+
+    private fun bindQualityTable(r: ReadingEntity) {
+        qualityTable.removeAllViews()
+        val json = r.qualityJson ?: return
+        val checks = try { JSONObject(json).getJSONArray("checks") } catch (e: Exception) { return }
+        for (i in 0 until checks.length()) {
+            val c = checks.getJSONObject(i)
+            val name = c.optString("name")
+            val verdict = c.optString("verdict")
+            val detail = c.optString("detail")
+            val row = TextView(this).apply {
+                textSize = 13f
+                setPadding(0, 6, 0, 6)
+                text = "$name: $detail  [$verdict]"
+                setTextColor(
+                    when (verdict) {
+                        "PASS" -> android.graphics.Color.parseColor("#2E7D32")
+                        "WARN" -> android.graphics.Color.parseColor("#F9A825")
+                        "FAIL" -> android.graphics.Color.parseColor("#C62828")
+                        else -> android.graphics.Color.parseColor("#616161")
+                    }
+                )
+            }
+            qualityTable.addView(row)
         }
     }
 
@@ -128,15 +259,16 @@ class HistoryDetailActivity : AppCompatActivity() {
         val totalSec = r.durationSec.toInt()
         tvStats.text = buildString {
             append("Duration: %d:%02d\n".format(totalSec / 60, totalSec % 60))
-            append("Avg BPM: ${r.avgBpm?.let { "%.0f".format(it) } ?: "--"}\n")
-            append("Min / Max BPM: ${r.minBpm?.let { "%.0f".format(it) } ?: "--"} / ${r.maxBpm?.let { "%.0f".format(it) } ?: "--"}\n")
+            append("Avg / Min / Max BPM: ${fmt(r.avgBpm)} / ${fmt(r.minBpm)} / ${fmt(r.maxBpm)}\n")
             append("Mean signal quality: ${r.meanSqi?.let { "%.0f%%".format(it * 100) } ?: "--"}\n")
-            append("Sample rate: ${r.sampleRateHz.toInt()} Hz")
+            append("Sample rate: ${r.sampleRateHz.toInt()} Hz · Source: $sourceLabel")
         }
 
         tvSpo2.text = spo2SummaryText(r)
         tvQuality.text = "Recording quality: ${r.qualityVerdict ?: "computing..."}"
     }
+
+    private fun fmt(v: Double?) = v?.let { "%.0f".format(it) } ?: "--"
 
     private fun spo2SummaryText(r: ReadingEntity): String = when (r.spo2Status) {
         null, Spo2Status.PENDING -> "SpO2: computing..."
@@ -152,7 +284,12 @@ class HistoryDetailActivity : AppCompatActivity() {
             append("SpO2: ${"%.0f".format(r.spo2Median)}%")
             append(" (${"%.0f".format(r.spo2Min)}-${"%.0f".format(r.spo2Max)}%, ")
             append("${"%.0f".format(r.spo2AcceptedPct)}% accepted)")
-            r.rMedian?.let { append(" · R %.3f".format(it)) }
+            r.rMedian?.let { append(" · median R %.3f".format(it)) }
+            if (r.piIrMedian != null && r.piRedMedian != null && r.piRedMedian > 0) {
+                append(" · PI IR %.3f%% / RED %.3f%% (ratio %.1fx)".format(
+                    100 * r.piIrMedian, 100 * r.piRedMedian, r.piIrMedian / r.piRedMedian
+                ))
+            }
             if (r.spo2CalibrationInfo != null) {
                 append("\nOne-point offset calibration — slope unverified. ${r.spo2CalibrationInfo}")
             } else {
@@ -240,6 +377,10 @@ class HistoryDetailActivity : AppCompatActivity() {
         val r = db.readingDao().getById(readingId) ?: return
         reading = r
         bindHeader(r)
+        val windows = withContext(Dispatchers.IO) { db.spo2WindowDao().getForReading(readingId) }
+        bindSpo2Chart(windows)
+        bindRChart(windows)
+        bindPiChart(windows)
     }
 
     private fun showRenameDialog(r: ReadingEntity) {

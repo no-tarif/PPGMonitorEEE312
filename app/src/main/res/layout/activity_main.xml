@@ -38,6 +38,24 @@
         android:text="Signal quality: --"
         android:textSize="14sp"
         android:gravity="center"
+        android:layout_marginBottom="8dp" />
+
+    <TextView
+        android:id="@+id/tvSpo2Live"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="SpO2 —"
+        android:textSize="26sp"
+        android:textStyle="bold"
+        android:gravity="center" />
+
+    <TextView
+        android:id="@+id/tvSpo2Detail"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text=""
+        android:textSize="12sp"
+        android:gravity="center"
         android:layout_marginBottom="12dp" />
 
     <com.eee312.ppgmonitor.ui.WaveformView

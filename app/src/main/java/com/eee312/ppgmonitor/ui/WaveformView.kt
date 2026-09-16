@@ -33,11 +33,25 @@ class WaveformView @JvmOverloads constructor(
 
     private var staticData: FloatArray? = null
 
+    /** Optional extra traces drawn on top of the static primary line, each
+     * independently AC-normalised (own mean/min/max) so both are visible
+     * regardless of absolute DC offset - e.g. raw IR/red overlaid on the
+     * cleaned-PPG waveform. Empty by default; setting/clearing this never
+     * changes how the existing live/static rendering above draws when no
+     * overlay is set - see setOverlayData's header. */
+    private var overlaySeries: List<Pair<FloatArray, Int>> = emptyList()
+
     private val linePaint = Paint().apply {
         color = Color.parseColor("#2E7D32")
         strokeWidth = 4f
         style = Paint.Style.STROKE
         isAntiAlias = true
+    }
+    private val overlayPaint = Paint().apply {
+        strokeWidth = 3f
+        style = Paint.Style.STROKE
+        isAntiAlias = true
+        alpha = 200
     }
     private val bgPaint = Paint().apply { color = Color.parseColor("#F5F5F5") }
 
@@ -58,6 +72,18 @@ class WaveformView @JvmOverloads constructor(
     fun setStaticData(data: FloatArray) {
         points.clear()
         staticData = data
+        postInvalidate()
+    }
+
+    /** Extra AC-normalised traces drawn over the current static data (each
+     * [Pair.first] must be the SAME length as the array passed to
+     * [setStaticData], e.g. per-sample raw ir/red alongside cleanedPpg) -
+     * used by the reading detail screen's "overlay raw IR/red" toggle.
+     * Pass an empty list (the default) to draw nothing extra - existing
+     * callers that never call this see no change at all. Has no effect
+     * in LIVE mode. */
+    fun setOverlayData(series: List<Pair<FloatArray, Int>>) {
+        overlaySeries = series
         postInvalidate()
     }
 
@@ -137,6 +163,45 @@ class WaveformView @JvmOverloads constructor(
             prevY = y
             x += dx
             i += stride
+        }
+
+        if (overlaySeries.isNotEmpty()) drawOverlays(canvas, data.size, stride, dx)
+    }
+
+    /** Draws each overlay series using the SAME x-decimation (stride, dx)
+     * as the primary static line above, so both stay time-aligned. Each
+     * series is independently AC-normalised: mean-centred, then scaled by
+     * its own peak deviation so it fills roughly the same vertical band
+     * as the primary trace regardless of its absolute DC level. */
+    private fun drawOverlays(canvas: Canvas, primaryLength: Int, stride: Int, dx: Float) {
+        for ((series, color) in overlaySeries) {
+            if (series.size < 2) continue
+            val n = minOf(series.size, primaryLength)
+
+            var mean = 0.0
+            var i = 0
+            var count = 0
+            while (i < n) { mean += series[i]; count++; i += stride }
+            if (count == 0) continue
+            mean /= count
+
+            var peak = 1e-6
+            i = 0
+            while (i < n) { val d = Math.abs(series[i] - mean); if (d > peak) peak = d; i += stride }
+
+            overlayPaint.color = color
+            var x = 0f
+            var prevX = -1f
+            var prevY = -1f
+            i = 0
+            while (i < n) {
+                val norm = ((series[i] - mean) / peak).toFloat() // -1..1
+                val y = height / 2f - norm * height * 0.45f
+                if (prevX >= 0f) canvas.drawLine(prevX, prevY, x, y, overlayPaint)
+                prevX = x; prevY = y
+                x += dx
+                i += stride
+            }
         }
     }
 }

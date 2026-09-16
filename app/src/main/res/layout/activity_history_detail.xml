@@ -10,7 +10,7 @@
     android:paddingTop="40dp"
     android:paddingStart="16dp"
     android:paddingEnd="16dp"
-    android:paddingBottom="16dp">
+    android:paddingBottom="24dp">
 
     <LinearLayout
         android:layout_width="match_parent"
@@ -40,14 +40,62 @@
         android:layout_height="wrap_content"
         android:textSize="13sp"
         android:textColor="#757575"
-        android:layout_marginBottom="16dp" />
+        android:layout_marginBottom="12dp" />
 
+    <!-- Summary -->
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="Cleaned PPG waveform (full reading)"
+        android:text="Summary"
         android:textSize="12sp"
         android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/tvStats"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textSize="14sp"
+        android:layout_marginTop="4dp"
+        android:layout_marginBottom="4dp" />
+
+    <TextView
+        android:id="@+id/tvSpo2"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textSize="14sp"
+        android:layout_marginBottom="4dp" />
+
+    <TextView
+        android:id="@+id/tvQuality"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textSize="14sp"
+        android:layout_marginBottom="16dp" />
+
+    <!-- PPG waveform -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical">
+
+        <TextView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Cleaned PPG waveform (full reading)"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+
+        <ToggleButton
+            android:id="@+id/btnToggleOverlay"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textOn="Raw IR/Red: on"
+            android:textOff="Raw IR/Red: off"
+            android:textSize="10sp"
+            android:text="Raw IR/Red: off" />
+    </LinearLayout>
 
     <com.eee312.ppgmonitor.ui.WaveformView
         android:id="@+id/waveformFull"
@@ -56,25 +104,101 @@
         android:layout_marginTop="4dp"
         android:layout_marginBottom="16dp" />
 
+    <!-- BPM + SQI -->
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="BPM over time"
+        android:text="BPM over time (blue) with per-window signal quality (purple, 0-1 axis)"
         android:textSize="12sp"
         android:textStyle="bold" />
 
-    <com.eee312.ppgmonitor.ui.WaveformView
-        android:id="@+id/waveformBpm"
+    <com.eee312.ppgmonitor.ui.TrendChartView
+        android:id="@+id/chartBpmSqi"
         android:layout_width="match_parent"
-        android:layout_height="120dp"
+        android:layout_height="140dp"
         android:layout_marginTop="4dp"
         android:layout_marginBottom="16dp" />
 
+    <!-- SpO2 -->
     <TextView
-        android:id="@+id/tvStats"
+        android:id="@+id/tvSpo2ChartLabel"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="SpO2 per window (filled = accepted, hollow = rejected; dashed line = 100% physical limit)"
+        android:textSize="12sp"
+        android:textStyle="bold" />
+
+    <com.eee312.ppgmonitor.ui.TrendChartView
+        android:id="@+id/chartSpo2"
+        android:layout_width="match_parent"
+        android:layout_height="160dp"
+        android:layout_marginTop="4dp"
+        android:layout_marginBottom="16dp" />
+
+    <!-- R -->
+    <TextView
+        android:id="@+id/tvRChartLabel"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="R (ratio-of-ratios) - shaded band is the typical 0.4-1.0 range"
+        android:textSize="12sp"
+        android:textStyle="bold" />
+
+    <com.eee312.ppgmonitor.ui.TrendChartView
+        android:id="@+id/chartR"
+        android:layout_width="match_parent"
+        android:layout_height="140dp"
+        android:layout_marginTop="4dp"
+        android:layout_marginBottom="16dp" />
+
+    <!-- Perfusion index -->
+    <TextView
+        android:id="@+id/tvPiChartLabel"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Perfusion index - IR (orange) vs red (dark red), %"
+        android:textSize="12sp"
+        android:textStyle="bold" />
+
+    <com.eee312.ppgmonitor.ui.TrendChartView
+        android:id="@+id/chartPi"
+        android:layout_width="match_parent"
+        android:layout_height="140dp"
+        android:layout_marginTop="4dp" />
+
+    <TextView
+        android:id="@+id/tvPiCaption"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:textSize="14sp" />
+        android:text="Should be within ~2x of each other on healthy hardware."
+        android:textSize="11sp"
+        android:textColor="#757575"
+        android:layout_marginBottom="16dp" />
+
+    <!-- Quality report table -->
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Recording quality report"
+        android:textSize="12sp"
+        android:textStyle="bold"
+        android:layout_marginBottom="4dp" />
+
+    <LinearLayout
+        android:id="@+id/qualityTable"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:layout_marginBottom="16dp" />
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Engineering estimate from a generic published curve — not for medical use."
+        android:textSize="11sp"
+        android:textStyle="italic"
+        android:textColor="#757575"
+        android:gravity="center" />
 
 </LinearLayout>
 </ScrollView>

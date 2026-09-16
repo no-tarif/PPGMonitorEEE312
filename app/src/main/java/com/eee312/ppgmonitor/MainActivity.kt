@@ -19,6 +19,10 @@ import androidx.lifecycle.lifecycleScope
 import com.eee312.ppgmonitor.dataset.DatasetInfo
 import com.eee312.ppgmonitor.dataset.DatasetCatalog
 import com.eee312.ppgmonitor.dsp.PpgPipeline
+import com.eee312.ppgmonitor.dsp.spo2.LiveSpo2Tracker
+import com.eee312.ppgmonitor.dsp.spo2.Spo2Config
+import com.eee312.ppgmonitor.dsp.spo2.Spo2Engine
+import com.eee312.ppgmonitor.dsp.spo2.Spo2Result
 import com.eee312.ppgmonitor.history.HistoryActivity
 import com.eee312.ppgmonitor.history.ReadingPostProcessor
 import com.eee312.ppgmonitor.history.SessionRecorder
@@ -30,6 +34,7 @@ import com.eee312.ppgmonitor.sensor.PlaybackSpeed
 import com.eee312.ppgmonitor.sensor.SensorSource
 import com.eee312.ppgmonitor.sensor.SimulatedSensorSource
 import com.eee312.ppgmonitor.sensor.UsbSerialSensorSource
+import com.eee312.ppgmonitor.ui.ChannelColors
 import com.eee312.ppgmonitor.ui.WaveformView
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -48,6 +53,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvHr: TextView
     private lateinit var tvRefHr: TextView
     private lateinit var tvSqi: TextView
+    private lateinit var tvSpo2Live: TextView
+    private lateinit var tvSpo2Detail: TextView
     private lateinit var tvStatus: TextView
     private lateinit var waveformView: WaveformView
     private lateinit var rgSource: RadioGroup
@@ -69,6 +76,13 @@ class MainActivity : AppCompatActivity() {
     // no matter which SensorSource is active, so Simulated/Dataset/ESP32
     // all land in the same history through the same path.
     private var recorder: SessionRecorder? = null
+
+    // Provisional live SpO2 tile - NEVER the source of truth for a saved
+    // reading (that's always ReadingPostProcessor's whole-record batch
+    // pass). Null whenever the active source/dataset isn't SpO2-eligible
+    // at all, in which case tvSpo2Detail already shows a static reason
+    // and handleSample() doesn't touch these fields.
+    private var liveSpo2Tracker: LiveSpo2Tracker? = null
 
     // Remembered alongside `recorder` purely so finalizeRecording() can
     // hand them to ReadingPostProcessor once the reading is saved -
@@ -110,6 +124,8 @@ class MainActivity : AppCompatActivity() {
         tvHr = findViewById(R.id.tvHr)
         tvRefHr = findViewById(R.id.tvRefHr)
         tvSqi = findViewById(R.id.tvSqi)
+        tvSpo2Live = findViewById<TextView>(R.id.tvSpo2Live).apply { setTextColor(ChannelColors.SPO2) }
+        tvSpo2Detail = findViewById(R.id.tvSpo2Detail)
         tvStatus = findViewById(R.id.tvStatus)
         waveformView = findViewById(R.id.waveformView)
         rgSource = findViewById(R.id.rgSource)
@@ -185,6 +201,62 @@ class MainActivity : AppCompatActivity() {
         }.toTypedArray()
     }
 
+    /** Decides whether this session's source/dataset can plausibly ever
+     * produce SpO2, mirroring ReadingPostProcessor.terminalEligibility's
+     * rules (kept separate/duplicated rather than shared, since this one
+     * only needs a yes/no + message, not the full Spo2Status enum a
+     * saved reading uses). Never synthesises SpO2 for a source that
+     * doesn't have a real second wavelength. */
+    private fun setUpLiveSpo2Tile(sourceType: SourceType, datasetId: String?, sampleRateHz: Double) {
+        tvSpo2Live.text = "SpO2 —"
+        val ineligibleReason = when (sourceType) {
+            SourceType.SIMULATED -> "not computed for this source"
+            SourceType.DATASET -> {
+                val info = datasets.find { it.id == datasetId }
+                when {
+                    info == null -> "not computed for this dataset"
+                    info.spo2Eligible -> null
+                    !info.hasRed -> "N/A — single wavelength"
+                    else -> "not computed for this dataset"
+                }
+            }
+            SourceType.ESP32_USB, SourceType.ESP32_BLE -> null
+        }
+        if (ineligibleReason != null) {
+            liveSpo2Tracker = null
+            tvSpo2Detail.text = ineligibleReason
+        } else {
+            liveSpo2Tracker = LiveSpo2Tracker(sampleRateHz)
+            tvSpo2Detail.text = ""
+        }
+    }
+
+    /** Runs off the main thread, per spec - launched from handleSample()
+     * only once every ~2s (LiveSpo2Tracker.addSample gates this), never
+     * per-sample. */
+    private fun updateLiveSpo2Tile(ir: DoubleArray, red: DoubleArray, fsHz: Double, cfg: Spo2Config) {
+        CoroutineScope(Dispatchers.Default).launch {
+            val result = Spo2Engine.estimate(ir, red, fsHz, cfg)
+            val (liveText, detailText) = when (result) {
+                is Spo2Result.NotAvailable -> "SpO2 —" to result.reason
+                is Spo2Result.Available -> {
+                    val w = result.windows.firstOrNull()
+                    val live = if (w != null && w.valid) "SpO2 %.0f%%".format(w.spo2) else "SpO2 --"
+                    val detail = if (w != null && !w.r.isNaN()) {
+                        "R %.3f · PI_IR %.3f%% / PI_RED %.3f%%".format(w.r, 100 * w.piIr, 100 * w.piRed)
+                    } else {
+                        "low perfusion or non-positive DC this window"
+                    }
+                    live to detail
+                }
+            }
+            runOnUiThread {
+                tvSpo2Live.text = liveText
+                tvSpo2Detail.text = detailText
+            }
+        }
+    }
+
     private fun selectedSpeed(): PlaybackSpeed = when (rgSpeed.checkedRadioButtonId) {
         R.id.rb2x -> PlaybackSpeed.X2
         R.id.rb4x -> PlaybackSpeed.X4
@@ -204,6 +276,7 @@ class MainActivity : AppCompatActivity() {
         activeDatasetId = datasetId
         activeSampleRateHz = source.sampleRateHz
         recorder = SessionRecorder(applicationContext, sourceType, datasetId, source.sampleRateHz)
+        setUpLiveSpo2Tile(sourceType, datasetId, source.sampleRateHz)
         running = true
         btnStartStop.text = "Stop"
         setControlsEnabled(false)
@@ -312,6 +385,12 @@ class MainActivity : AppCompatActivity() {
             out.rawPpg, out.cleanedPpg, out.newHrBpm, out.sqi, accMagnitude,
             sample.ir, sample.red, sample.green
         )
+
+        liveSpo2Tracker?.let { tracker ->
+            tracker.addSample(sample.ir, sample.red)?.let { (ir, red) ->
+                updateLiveSpo2Tile(ir, red, activeSampleRateHz, tracker.liveConfig)
+            }
+        }
 
         val now = SystemClock.elapsedRealtime()
         if (now - lastWaveformUpdateMs < minUiUpdateIntervalMs) return
