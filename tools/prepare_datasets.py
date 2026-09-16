@@ -62,12 +62,12 @@ from __future__ import annotations
 import json
 import shutil
 import sys
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from scipy.signal import decimate, welch
+from scipy.signal import decimate, resample_poly, welch
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -80,10 +80,18 @@ PROJECT_DIR = Path(r"E:\Study Materials\3-1\312\Project")
 DATA_SETS_DIR = PROJECT_DIR / "Data Sets"
 HARDWARE_WALK_CSV = PROJECT_DIR / "walk_clean.csv"
 HARDWARE_CLASS1_CSV = PROJECT_DIR / "class_1_clean.csv"
+SEP16_CAPTURE_CSV = PROJECT_DIR / "sep16_capture.csv"
+RUNNING2_CSV = PROJECT_DIR / "Running_2.csv"
 
 SOURCE_FS_HZ = 500.0
 TARGET_FS_HZ = 25.0
 DECIMATE_STAGES = (5, 4)  # 5 * 4 = 20 = 500/25, split per scipy's large-factor guidance
+
+# sep16_capture.csv's sample interval is a constant 0.06s -> exactly 50/3 Hz.
+# resample_poly(x, 3, 2) turns that into exactly 25 Hz (50/3 * 3/2 = 25),
+# no fractional-rate approximation involved.
+SEP16_SOURCE_FS_HZ = 1.0 / 0.06
+SEP16_RESAMPLE_UP, SEP16_RESAMPLE_DOWN = 3, 2
 
 PULSE_BAND_HZ = (0.5, 4.0)
 HR_RANGE_BPM = (30.0, 240.0)  # matches HeartRateEstimator.kt's hrRangeBpm
@@ -108,6 +116,14 @@ class ManifestEntry:
     sourcePlethChannel: str | None
     referenceHrBpm: float | None
     hasReferenceHrSeries: bool
+    # --- SpO2-era fields (all optional - DatasetCatalog.kt defaults these
+    # for any manifest entry that omits them, so old entries keep parsing) ---
+    hasRed: bool = True
+    hasGreen: bool = False
+    wavelengthsNm: dict[str, int] | None = None
+    originalSampleRateHz: float | None = None
+    spo2Eligible: bool = False
+    preprocessingNotes: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -244,6 +260,16 @@ def process_physionet_record(subject: str, activity: str) -> ManifestEntry:
         sourcePlethChannel=f"ir<-{ir_col} (SNR {snrs[ir_col]:.2f}), red<-{red_col} (SNR {snrs[red_col]:.2f})",
         referenceHrBpm=round(mean_bpm, 1) if mean_bpm is not None else None,
         hasReferenceHrSeries=has_ref,
+        hasRed=True,
+        hasGreen=False,
+        wavelengthsNm=None,
+        originalSampleRateHz=SOURCE_FS_HZ,
+        spo2Eligible=False,
+        preprocessingNotes=(
+            "ir/red are the two pleth_* channels with the highest in-band SNR, "
+            "not real 660/880nm wavelengths - not eligible for SpO2 (see "
+            "select_ir_red() in this script)."
+        ),
     )
 
 
@@ -266,12 +292,205 @@ def copy_hardware_record(src: Path, dataset_id: str, display_name: str) -> Manif
         sourcePlethChannel=None,
         referenceHrBpm=None,
         hasReferenceHrSeries=False,
+        hasRed=True,
+        hasGreen=False,
+        wavelengthsNm=None,
+        originalSampleRateHz=None,
+        spo2Eligible=False,
+        preprocessingNotes=(
+            "ir/red wavelengths were never recorded for this early capture - "
+            "not eligible for SpO2."
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# sep16_capture.csv (ESP32 + MAX30105, IR 880nm / red 660nm / green 537nm)
+# ---------------------------------------------------------------------------
+
+def repair_sep16_timestamps(t: np.ndarray) -> np.ndarray:
+    """Fixes isolated single-row timestamp glitches by linear interpolation
+    from their immediate neighbours, WITHOUT splitting the recording.
+
+    sep16_capture.csv has exactly three such rows (0-based 1898, 2066, 2253)
+    where a single sample's timestamp is garbage (e.g. 14.445 sandwiched
+    between 114.385 and 114.505) - a logging hiccup, not a session boundary.
+    The MATLAB tooling's split_recording_sessions.m treats each of these as
+    a "session break" and analysed only the longest surviving fragment,
+    discarding ~45% of one continuous 206.8s recording. Detected generically
+    here (any single-row spike where both neighbouring gaps are anomalous)
+    rather than hardcoded indices, so this still works if the capture is
+    re-recorded and the glitch count/position changes.
+    """
+    t = t.copy()
+    dt = np.diff(t)
+    median_dt = np.median(dt)
+    bad_gap = np.abs(dt - median_dt) > 10 * median_dt  # >10x expected spacing
+    # A row i (1 <= i <= len(t)-2) is an isolated glitch if BOTH the gap
+    # before it and the gap after it are anomalous, but fixing t[i] alone
+    # (not its neighbours) would resolve both.
+    for i in range(1, len(t) - 1):
+        if bad_gap[i - 1] and bad_gap[i]:
+            t[i] = 0.5 * (t[i - 1] + t[i + 1])
+    return t
+
+
+def resample_poly_line(x: np.ndarray) -> np.ndarray:
+    """resample_poly with padtype='line' - matters here: the default zero
+    padding collapses the DC level of the last analysis window and made R
+    jump to ~0.98 in early testing. 'line' extrapolates the boundary
+    linearly instead, which keeps the DC/perfusion-index statistics SpO2
+    depends on intact at the edges."""
+    return resample_poly(x, SEP16_RESAMPLE_UP, SEP16_RESAMPLE_DOWN, padtype="line")
+
+
+def process_sep16() -> ManifestEntry:
+    print(f"\n[hw_sep16] reading {SEP16_CAPTURE_CSV.name} ...")
+    df = pd.read_csv(SEP16_CAPTURE_CSV)
+
+    t = repair_sep16_timestamps(df["time_s"].to_numpy(dtype=float))
+    df = df.assign(time_s=t)
+
+    # Row 0 is a startup glitch (ir ~82.7k while every following sample is
+    # ~115k) - drop it before resampling so it doesn't pollute the FIR
+    # anti-alias filter's initial conditions.
+    df = df.iloc[1:].reset_index(drop=True)
+
+    n_in = len(df)
+    print(f"  repaired 3 corrupted timestamps, dropped row 0 -> {n_in} samples "
+          f"at {SEP16_SOURCE_FS_HZ:.4f} Hz ({n_in / SEP16_SOURCE_FS_HZ:.1f} s)")
+
+    ir_25 = resample_poly_line(df["ir"].to_numpy(dtype=float))
+    red_25 = resample_poly_line(df["red"].to_numpy(dtype=float))
+    green_25 = resample_poly_line(df["green"].to_numpy(dtype=float))
+    accx_25 = resample_poly_line(df["accX"].to_numpy(dtype=float))
+    accy_25 = resample_poly_line(df["accY"].to_numpy(dtype=float))
+    accz_25 = resample_poly_line(df["accZ"].to_numpy(dtype=float))
+
+    n = len(ir_25)
+    assert n == len(red_25) == len(green_25) == len(accx_25) == len(accy_25) == len(accz_25)
+    time_col = np.arange(n) / TARGET_FS_HZ
+
+    out = pd.DataFrame({
+        "time": np.round(time_col, 3),
+        "ir": np.clip(np.round(ir_25), 0, None).astype(np.int64),
+        "red": np.clip(np.round(red_25), 0, None).astype(np.int64),
+        "accX": np.round(accx_25, 4),
+        "accY": np.round(accy_25, 4),
+        "accZ": np.round(accz_25, 4),
+        "green": np.clip(np.round(green_25), 0, None).astype(np.int64),
+    })
+    out_path = OUT_DIR / "hw_sep16.csv"
+    out.to_csv(out_path, index=False)
+    print(f"  resampled {SEP16_SOURCE_FS_HZ:.4f} Hz -> {TARGET_FS_HZ} Hz "
+          f"(resample_poly {SEP16_RESAMPLE_UP}/{SEP16_RESAMPLE_DOWN}, padtype=line): "
+          f"{n_in} -> {n} samples")
+    print(f"  wrote {out_path.name}: {n} samples, {n / TARGET_FS_HZ:.1f} s, "
+          f"{out_path.stat().st_size / 1024:.0f} KB")
+
+    return ManifestEntry(
+        id="hw_sep16",
+        displayName="Hardware — Sep 16 (IR+Red)",
+        subject="hardware",
+        activity="unknown",
+        sampleRateHz=TARGET_FS_HZ,
+        durationSec=round(n / TARGET_FS_HZ, 1),
+        sampleCount=n,
+        sourcePlethChannel=None,
+        referenceHrBpm=None,
+        hasReferenceHrSeries=False,
+        hasRed=True,
+        hasGreen=True,
+        wavelengthsNm={"ir": 880, "red": 660, "green": 537},
+        originalSampleRateHz=round(SEP16_SOURCE_FS_HZ, 4),
+        spo2Eligible=True,
+        preprocessingNotes=(
+            "3 single-row corrupted timestamps (0-based rows 1898, 2066, 2253 "
+            "in the source file) repaired by linear interpolation from their "
+            "neighbours - this is one continuous 206.8s recording, NOT several "
+            "concatenated sessions. Row 0 (startup glitch, ir~82.7k vs ~115k "
+            "everywhere else) dropped. Resampled 16.667Hz -> 25Hz via "
+            "scipy.signal.resample_poly(x, 3, 2, padtype='line'); padtype='line' "
+            "matters - the default zero padding collapses the last window's DC "
+            "and made R jump to ~0.98. Green LED is effectively off (0-134 "
+            "counts) - column kept but not used for anything. Red perfusion "
+            "index is ~1/3 of IR (median PI_IR ~0.20%, PI_RED ~0.073%): most "
+            "SpO2 windows read above the generic curve's 100% ceiling and are "
+            "rejected - a real hardware finding (red LED under-driven), not a "
+            "processing bug."
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Running_2.csv (this app's own History CSV export - single wavelength)
+# ---------------------------------------------------------------------------
+
+def process_running2() -> ManifestEntry:
+    print(f"\n[hw_running2] reading {RUNNING2_CSV.name} ...")
+    df = pd.read_csv(RUNNING2_CSV)
+
+    # rawPpg is PpgPipeline.Output.rawPpg, which is always sample.ir - see
+    # ppgChannelSelector in PpgPipeline.kt. This export has no red channel
+    # at all (single wavelength) and accMagnitude is a scalar (sqrt of the
+    # three axes), not per-axis data, so accX/Y/Z are written as 0 - this
+    # DISCARDS the real accelerometer waveform. That also means the LMS
+    # motion-artifact filter will have no real reference during playback of
+    # this dataset (it already had none during the original capture either -
+    # see the Phase 0 report on why accMagnitude was 0 throughout).
+    n = len(df)
+    out = pd.DataFrame({
+        "time": df["tSec"].round(3),
+        "ir": np.clip(df["rawPpg"].round(), 0, None).astype(np.int64),
+        "red": ["" for _ in range(n)],
+        "accX": np.zeros(n),
+        "accY": np.zeros(n),
+        "accZ": np.zeros(n),
+    })
+    out_path = OUT_DIR / "hw_running2.csv"
+    out.to_csv(out_path, index=False)
+    print(f"  wrote {out_path.name}: {n} samples, {n / TARGET_FS_HZ:.1f} s, "
+          f"{out_path.stat().st_size / 1024:.0f} KB (red empty, accX/Y/Z=0 - see manifest notes)")
+
+    return ManifestEntry(
+        id="hw_running2",
+        displayName="Hardware — Running 2 (single λ)",
+        subject="hardware",
+        activity="run",
+        sampleRateHz=TARGET_FS_HZ,
+        durationSec=round(n / TARGET_FS_HZ, 1),
+        sampleCount=n,
+        sourcePlethChannel=None,
+        referenceHrBpm=None,
+        hasReferenceHrSeries=False,
+        hasRed=False,
+        hasGreen=False,
+        wavelengthsNm={"ir": 880},
+        originalSampleRateHz=TARGET_FS_HZ,
+        spo2Eligible=False,
+        preprocessingNotes=(
+            "Exported from this app's own History (single-wavelength capture, "
+            "ir only - SpO2 needs red AND ir from the same instant, see "
+            "estimate_spo2.m). accMagnitude in the source export is a scalar "
+            "sqrt(x^2+y^2+z^2), not per-axis data, so accX/Y/Z are written as "
+            "0 here rather than fabricated - the LMS motion-artifact filter "
+            "gets no real reference on playback of this dataset (accMagnitude "
+            "was already 0 throughout the original capture, i.e. the "
+            "accelerometer likely wasn't wired/initialised on the firmware at "
+            "capture time - see the Phase 0 report). bpm/cleanedPpg from the "
+            "original export are not reused; the app recomputes them fresh "
+            "from ir on playback."
+        ),
     )
 
 
 def main() -> None:
     if not DATA_SETS_DIR.exists():
         sys.exit(f"Data Sets folder not found: {DATA_SETS_DIR}")
+    if not SEP16_CAPTURE_CSV.exists():
+        sys.exit(f"sep16 capture not found: {SEP16_CAPTURE_CSV}")
+    if not RUNNING2_CSV.exists():
+        sys.exit(f"Running_2 capture not found: {RUNNING2_CSV}")
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     for old in OUT_DIR.glob("*"):
@@ -283,6 +502,8 @@ def main() -> None:
 
     manifest.append(copy_hardware_record(HARDWARE_WALK_CSV, "hw_walk", "Hardware \u2014 Walk"))
     manifest.append(copy_hardware_record(HARDWARE_CLASS1_CSV, "hw_class1", "Hardware \u2014 Class 1"))
+    manifest.append(process_sep16())
+    manifest.append(process_running2())
 
     manifest_path = OUT_DIR / "datasets.json"
     manifest_path.write_text(

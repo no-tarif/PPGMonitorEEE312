@@ -1,4 +1,4 @@
 # Golden regression files must stay byte-identical to what the JVM test
 # generates (LF-only). Without this, core.autocrlf=true rewrites them to
 # CRLF on checkout and every future golden-test run fails spuriously.
-app/src/test/resources/golden/*.csv -text eol=lf
+app/src/test/resources/golden/*.csv text eol=lf

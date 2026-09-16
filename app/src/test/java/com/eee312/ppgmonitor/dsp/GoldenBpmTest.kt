@@ -46,15 +46,18 @@ class GoldenBpmTest {
         return ids.map { id -> DatasetRef(id, File(appDir, "src/main/assets/datasets/$id.csv")) }
     }
 
-    /** Mirrors CsvDatasetSource.parseLine's tolerant "time,ir,red,accX,accY,accZ" parsing. */
+    /** Mirrors CsvDatasetSource.parseLine's tolerant "time,ir,red,accX,accY,accZ[,green]"
+     * parsing, including its two SpO2-era extensions (optional trailing
+     * green field, ignored; empty red field parsed as 0). */
     private fun parseLine(line: String): SensorSample? {
         val f = line.split(',')
-        if (f.size != 6) return null
+        if (f.size != 6 && f.size != 7) return null
         return try {
+            val redField = f[2].trim()
             SensorSample(
                 timestampMs = 0L,
                 ir = f[1].trim().toInt(),
-                red = f[2].trim().toInt(),
+                red = if (redField.isEmpty()) 0 else redField.toInt(),
                 accX = f[3].trim().toFloat(),
                 accY = f[4].trim().toFloat(),
                 accZ = f[5].trim().toFloat()

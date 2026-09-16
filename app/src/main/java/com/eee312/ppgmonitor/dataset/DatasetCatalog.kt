@@ -29,7 +29,19 @@ object DatasetCatalog {
                 sampleCount = o.getInt("sampleCount"),
                 sourcePlethChannel = if (o.isNull("sourcePlethChannel")) null else o.getString("sourcePlethChannel"),
                 referenceHrBpm = if (o.isNull("referenceHrBpm")) null else o.getDouble("referenceHrBpm"),
-                hasReferenceHrSeries = o.getBoolean("hasReferenceHrSeries")
+                hasReferenceHrSeries = o.getBoolean("hasReferenceHrSeries"),
+                hasRed = o.optBoolean("hasRed", true),
+                hasGreen = o.optBoolean("hasGreen", false),
+                wavelengthsNm = o.optJSONObject("wavelengthsNm")?.let { wl ->
+                    wl.keys().asSequence().associateWith { wl.getInt(it) }
+                },
+                originalSampleRateHz = if (o.has("originalSampleRateHz") && !o.isNull("originalSampleRateHz")) {
+                    o.getDouble("originalSampleRateHz")
+                } else null,
+                spo2Eligible = o.optBoolean("spo2Eligible", false),
+                preprocessingNotes = if (o.has("preprocessingNotes") && !o.isNull("preprocessingNotes")) {
+                    o.getString("preprocessingNotes")
+                } else null
             )
         }
     }

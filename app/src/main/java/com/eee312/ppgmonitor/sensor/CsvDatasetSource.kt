@@ -128,18 +128,27 @@ class CsvDatasetSource(
         }
     }
 
-    /** Parses one "time,ir,red,accX,accY,accZ" line. Returns null (dropping
-     * the line) on any malformed input, same tolerant approach as
-     * UsbSerialSensorSource.parseLine(). */
+    /** Parses one "time,ir,red,accX,accY,accZ" line, with two SpO2-era
+     * extensions that don't change how the original 8 bundled datasets
+     * (always exactly 6 fields, ir/red always numeric) are read:
+     *   - an optional 7th trailing "green" field (ignored for now - the
+     *     sample model doesn't carry a green channel yet)
+     *   - an empty red field (single-wavelength captures, e.g.
+     *     "Hardware - Running 2") - parsed as 0, same sentinel meaning as
+     *     the bundled green column being absent; DatasetInfo.hasRed tells
+     *     callers whether that 0 is real data or a placeholder
+     * Returns null (dropping the line) on any other malformed input, same
+     * tolerant approach as UsbSerialSensorSource.parseLine(). */
     private fun parseLine(line: String): Pair<Double, SensorSample>? {
         val f = line.split(',')
-        if (f.size != 6) return null
+        if (f.size != 6 && f.size != 7) return null
         return try {
             val t = f[0].trim().toDouble()
+            val redField = f[2].trim()
             val sample = SensorSample(
                 timestampMs = SystemClock.elapsedRealtime(),
                 ir = f[1].trim().toInt(),
-                red = f[2].trim().toInt(),
+                red = if (redField.isEmpty()) 0 else redField.toInt(),
                 accX = f[3].trim().toFloat(),
                 accY = f[4].trim().toFloat(),
                 accZ = f[5].trim().toFloat()

@@ -10,7 +10,13 @@
       "sampleCount": 12180,
       "sourcePlethChannel": "ir<-pleth_5 (SNR 0.64), red<-pleth_2 (SNR 0.50)",
       "referenceHrBpm": 73.1,
-      "hasReferenceHrSeries": true
+      "hasReferenceHrSeries": true,
+      "hasRed": true,
+      "hasGreen": false,
+      "wavelengthsNm": null,
+      "originalSampleRateHz": 500.0,
+      "spo2Eligible": false,
+      "preprocessingNotes": "ir/red are the two pleth_* channels with the highest in-band SNR, not real 660/880nm wavelengths - not eligible for SpO2 (see select_ir_red() in this script)."
     },
     {
       "id": "s11_walk",
@@ -22,7 +28,13 @@
       "sampleCount": 12164,
       "sourcePlethChannel": "ir<-pleth_2 (SNR 0.50), red<-pleth_5 (SNR 0.50)",
       "referenceHrBpm": 83.8,
-      "hasReferenceHrSeries": true
+      "hasReferenceHrSeries": true,
+      "hasRed": true,
+      "hasGreen": false,
+      "wavelengthsNm": null,
+      "originalSampleRateHz": 500.0,
+      "spo2Eligible": false,
+      "preprocessingNotes": "ir/red are the two pleth_* channels with the highest in-band SNR, not real 660/880nm wavelengths - not eligible for SpO2 (see select_ir_red() in this script)."
     },
     {
       "id": "s11_run",
@@ -34,7 +46,13 @@
       "sampleCount": 12345,
       "sourcePlethChannel": "ir<-pleth_2 (SNR 0.43), red<-pleth_1 (SNR 0.41)",
       "referenceHrBpm": 87.8,
-      "hasReferenceHrSeries": true
+      "hasReferenceHrSeries": true,
+      "hasRed": true,
+      "hasGreen": false,
+      "wavelengthsNm": null,
+      "originalSampleRateHz": 500.0,
+      "spo2Eligible": false,
+      "preprocessingNotes": "ir/red are the two pleth_* channels with the highest in-band SNR, not real 660/880nm wavelengths - not eligible for SpO2 (see select_ir_red() in this script)."
     },
     {
       "id": "s12_sit",
@@ -46,7 +64,13 @@
       "sampleCount": 12148,
       "sourcePlethChannel": "ir<-pleth_2 (SNR 5.59), red<-pleth_1 (SNR 4.13)",
       "referenceHrBpm": 73.0,
-      "hasReferenceHrSeries": true
+      "hasReferenceHrSeries": true,
+      "hasRed": true,
+      "hasGreen": false,
+      "wavelengthsNm": null,
+      "originalSampleRateHz": 500.0,
+      "spo2Eligible": false,
+      "preprocessingNotes": "ir/red are the two pleth_* channels with the highest in-band SNR, not real 660/880nm wavelengths - not eligible for SpO2 (see select_ir_red() in this script)."
     },
     {
       "id": "s12_walk",
@@ -58,7 +82,13 @@
       "sampleCount": 12145,
       "sourcePlethChannel": "ir<-pleth_2 (SNR 1.64), red<-pleth_5 (SNR 0.74)",
       "referenceHrBpm": 87.9,
-      "hasReferenceHrSeries": true
+      "hasReferenceHrSeries": true,
+      "hasRed": true,
+      "hasGreen": false,
+      "wavelengthsNm": null,
+      "originalSampleRateHz": 500.0,
+      "spo2Eligible": false,
+      "preprocessingNotes": "ir/red are the two pleth_* channels with the highest in-band SNR, not real 660/880nm wavelengths - not eligible for SpO2 (see select_ir_red() in this script)."
     },
     {
       "id": "s12_run",
@@ -70,7 +100,13 @@
       "sampleCount": 12117,
       "sourcePlethChannel": "ir<-pleth_2 (SNR 1.26), red<-pleth_4 (SNR 1.08)",
       "referenceHrBpm": 90.2,
-      "hasReferenceHrSeries": true
+      "hasReferenceHrSeries": true,
+      "hasRed": true,
+      "hasGreen": false,
+      "wavelengthsNm": null,
+      "originalSampleRateHz": 500.0,
+      "spo2Eligible": false,
+      "preprocessingNotes": "ir/red are the two pleth_* channels with the highest in-band SNR, not real 660/880nm wavelengths - not eligible for SpO2 (see select_ir_red() in this script)."
     },
     {
       "id": "hw_walk",
@@ -82,7 +118,13 @@
       "sampleCount": 4160,
       "sourcePlethChannel": null,
       "referenceHrBpm": null,
-      "hasReferenceHrSeries": false
+      "hasReferenceHrSeries": false,
+      "hasRed": true,
+      "hasGreen": false,
+      "wavelengthsNm": null,
+      "originalSampleRateHz": null,
+      "spo2Eligible": false,
+      "preprocessingNotes": "ir/red wavelengths were never recorded for this early capture - not eligible for SpO2."
     },
     {
       "id": "hw_class1",
@@ -94,7 +136,55 @@
       "sampleCount": 5925,
       "sourcePlethChannel": null,
       "referenceHrBpm": null,
-      "hasReferenceHrSeries": false
+      "hasReferenceHrSeries": false,
+      "hasRed": true,
+      "hasGreen": false,
+      "wavelengthsNm": null,
+      "originalSampleRateHz": null,
+      "spo2Eligible": false,
+      "preprocessingNotes": "ir/red wavelengths were never recorded for this early capture - not eligible for SpO2."
+    },
+    {
+      "id": "hw_sep16",
+      "displayName": "Hardware \u2014 Sep 16 (IR+Red)",
+      "subject": "hardware",
+      "activity": "unknown",
+      "sampleRateHz": 25.0,
+      "durationSec": 206.8,
+      "sampleCount": 5171,
+      "sourcePlethChannel": null,
+      "referenceHrBpm": null,
+      "hasReferenceHrSeries": false,
+      "hasRed": true,
+      "hasGreen": true,
+      "wavelengthsNm": {
+        "ir": 880,
+        "red": 660,
+        "green": 537
+      },
+      "originalSampleRateHz": 16.6667,
+      "spo2Eligible": true,
+      "preprocessingNotes": "3 single-row corrupted timestamps (0-based rows 1898, 2066, 2253 in the source file) repaired by linear interpolation from their neighbours - this is one continuous 206.8s recording, NOT several concatenated sessions. Row 0 (startup glitch, ir~82.7k vs ~115k everywhere else) dropped. Resampled 16.667Hz -> 25Hz via scipy.signal.resample_poly(x, 3, 2, padtype='line'); padtype='line' matters - the default zero padding collapses the last window's DC and made R jump to ~0.98. Green LED is effectively off (0-134 counts) - column kept but not used for anything. Red perfusion index is ~1/3 of IR (median PI_IR ~0.20%, PI_RED ~0.073%): most SpO2 windows read above the generic curve's 100% ceiling and are rejected - a real hardware finding (red LED under-driven), not a processing bug."
+    },
+    {
+      "id": "hw_running2",
+      "displayName": "Hardware \u2014 Running 2 (single \u03bb)",
+      "subject": "hardware",
+      "activity": "run",
+      "sampleRateHz": 25.0,
+      "durationSec": 136.0,
+      "sampleCount": 3399,
+      "sourcePlethChannel": null,
+      "referenceHrBpm": null,
+      "hasReferenceHrSeries": false,
+      "hasRed": false,
+      "hasGreen": false,
+      "wavelengthsNm": {
+        "ir": 880
+      },
+      "originalSampleRateHz": 25.0,
+      "spo2Eligible": false,
+      "preprocessingNotes": "Exported from this app's own History (single-wavelength capture, ir only - SpO2 needs red AND ir from the same instant, see estimate_spo2.m). accMagnitude in the source export is a scalar sqrt(x^2+y^2+z^2), not per-axis data, so accX/Y/Z are written as 0 here rather than fabricated - the LMS motion-artifact filter gets no real reference on playback of this dataset (accMagnitude was already 0 throughout the original capture, i.e. the accelerometer likely wasn't wired/initialised on the firmware at capture time - see the Phase 0 report). bpm/cleanedPpg from the original export are not reused; the app recomputes them fresh from ir on playback."
     }
   ]
 }
