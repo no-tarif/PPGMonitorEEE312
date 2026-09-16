@@ -20,6 +20,7 @@ import com.eee312.ppgmonitor.dataset.DatasetInfo
 import com.eee312.ppgmonitor.dataset.DatasetCatalog
 import com.eee312.ppgmonitor.dsp.PpgPipeline
 import com.eee312.ppgmonitor.history.HistoryActivity
+import com.eee312.ppgmonitor.history.ReadingPostProcessor
 import com.eee312.ppgmonitor.history.SessionRecorder
 import com.eee312.ppgmonitor.history.SourceType
 import com.eee312.ppgmonitor.model.SensorSample
@@ -68,6 +69,13 @@ class MainActivity : AppCompatActivity() {
     // no matter which SensorSource is active, so Simulated/Dataset/ESP32
     // all land in the same history through the same path.
     private var recorder: SessionRecorder? = null
+
+    // Remembered alongside `recorder` purely so finalizeRecording() can
+    // hand them to ReadingPostProcessor once the reading is saved -
+    // SessionRecorder itself doesn't need to know about SpO2/quality.
+    private var activeSourceType: SourceType = SourceType.SIMULATED
+    private var activeDatasetId: String? = null
+    private var activeSampleRateHz: Double = PpgPipeline.FS_HZ
 
     // Caps how often we actually touch views, independent of the active
     // source's sample rate. Every sample still goes through pipeline.process()
@@ -192,6 +200,9 @@ class MainActivity : AppCompatActivity() {
         lastWaveformUpdateMs = 0L
         lastRefBpmUpdateMs = 0L
         activeSource = source
+        activeSourceType = sourceType
+        activeDatasetId = datasetId
+        activeSampleRateHz = source.sampleRateHz
         recorder = SessionRecorder(applicationContext, sourceType, datasetId, source.sampleRateHz)
         running = true
         btnStartStop.text = "Stop"
@@ -250,8 +261,23 @@ class MainActivity : AppCompatActivity() {
             return
         }
         baseStatus?.let { tvStatus.text = it }
+        val sourceTypeAtStop = activeSourceType
+        val datasetIdAtStop = activeDatasetId
+        val sampleRateHzAtStop = activeSampleRateHz
         lifecycleScope.launch {
             val result = rec.finish()
+            if (result != null) {
+                // Detached from lifecycleScope on purpose (same reasoning
+                // as onDestroy()'s rec.finish() call below): this should
+                // keep running even if the activity is destroyed right
+                // after Stop is tapped.
+                CoroutineScope(Dispatchers.Default).launch {
+                    ReadingPostProcessor.process(
+                        applicationContext, result.readingId, sourceTypeAtStop,
+                        datasetIdAtStop, sampleRateHzAtStop, datasets
+                    )
+                }
+            }
             val base = tvStatus.text.toString()
             tvStatus.text = if (result != null) {
                 "$base · saved as ${result.name}"
@@ -279,7 +305,13 @@ class MainActivity : AppCompatActivity() {
             sample.accX.toDouble() * sample.accX + sample.accY.toDouble() * sample.accY +
                 sample.accZ.toDouble() * sample.accZ
         )
-        recorder?.addSample(out.rawPpg, out.cleanedPpg, out.newHrBpm, out.sqi, accMagnitude)
+        // Parallel consumer (Rule Zero): red/green are read straight off
+        // `sample` here, never through PpgPipeline.Output - the pipeline
+        // call above and its result are untouched.
+        recorder?.addSample(
+            out.rawPpg, out.cleanedPpg, out.newHrBpm, out.sqi, accMagnitude,
+            sample.ir, sample.red, sample.green
+        )
 
         val now = SystemClock.elapsedRealtime()
         if (now - lastWaveformUpdateMs < minUiUpdateIntervalMs) return

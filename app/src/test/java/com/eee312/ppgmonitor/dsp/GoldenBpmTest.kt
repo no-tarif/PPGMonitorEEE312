@@ -48,7 +48,9 @@ class GoldenBpmTest {
 
     /** Mirrors CsvDatasetSource.parseLine's tolerant "time,ir,red,accX,accY,accZ[,green]"
      * parsing, including its two SpO2-era extensions (optional trailing
-     * green field, ignored; empty red field parsed as 0). */
+     * green field; empty red field parsed as null). Neither red nor green
+     * is read by PpgPipeline (only ir feeds the HR path), so this choice
+     * cannot affect the golden BPM/SQI series below. */
     private fun parseLine(line: String): SensorSample? {
         val f = line.split(',')
         if (f.size != 6 && f.size != 7) return null
@@ -57,7 +59,7 @@ class GoldenBpmTest {
             SensorSample(
                 timestampMs = 0L,
                 ir = f[1].trim().toInt(),
-                red = if (redField.isEmpty()) 0 else redField.toInt(),
+                red = if (redField.isEmpty()) null else redField.toInt(),
                 accX = f[3].trim().toFloat(),
                 accY = f[4].trim().toFloat(),
                 accZ = f[5].trim().toFloat()

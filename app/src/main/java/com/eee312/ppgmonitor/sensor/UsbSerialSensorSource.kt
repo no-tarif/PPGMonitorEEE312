@@ -189,14 +189,18 @@ class UsbSerialSensorSource(
     }
 
     /** Parses one newline-delimited ASCII line per USB_SERIAL_CONTRACT.md:
-     * "ir,red,accX,accY,accZ" (5 comma-separated fields). Returns null
-     * (dropping the line) on any malformed input - change this together
-     * with USB_SERIAL_CONTRACT.md if the real firmware's line format
-     * differs; nothing else in this class depends on the exact format. */
+     * "ir,red,accX,accY,accZ" (5 comma-separated fields, unchanged) or,
+     * new for SpO2 hardware that also has a green LED, "ir,red,accX,accY,
+     * accZ,green" (6 fields, green appended last - same convention as
+     * CsvDatasetSource's optional trailing green column). Returns null
+     * (dropping the line) on any other malformed input - change this
+     * together with USB_SERIAL_CONTRACT.md if the real firmware's line
+     * format differs; nothing else in this class depends on the exact
+     * format. */
     private fun parseLine(line: String): SensorSample? {
         val fields = line.split(',')
-        if (fields.size != 5) {
-            Log.w(TAG, "Skipping malformed line (expected 5 fields, got ${fields.size}): $line")
+        if (fields.size != 5 && fields.size != 6) {
+            Log.w(TAG, "Skipping malformed line (expected 5 or 6 fields, got ${fields.size}): $line")
             return null
         }
         return try {
@@ -206,7 +210,8 @@ class UsbSerialSensorSource(
                 red = fields[1].trim().toInt(),
                 accX = fields[2].trim().toFloat(),
                 accY = fields[3].trim().toFloat(),
-                accZ = fields[4].trim().toFloat()
+                accZ = fields[4].trim().toFloat(),
+                green = if (fields.size == 6) fields[5].trim().toIntOrNull() else null
             )
         } catch (e: NumberFormatException) {
             Log.w(TAG, "Skipping malformed line (parse error): $line", e)

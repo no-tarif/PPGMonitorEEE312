@@ -40,11 +40,21 @@ into the app's UI — "ESP32 (USB)" in the source picker uses
 ## Line format
 
 One sample per line, newline-terminated (`\n`), plain ASCII text,
-5 comma-separated fields, **no header row**:
+**no header row**, either:
 
-```
-ir,red,accX,accY,accZ
-```
+- **5 comma-separated fields** (unchanged, still the default):
+  ```
+  ir,red,accX,accY,accZ
+  ```
+- **6 comma-separated fields**, for SpO2-era hardware that also exposes a
+  green LED (green appended LAST, same convention `CsvDatasetSource` uses
+  for the bundled sep16 dataset):
+  ```
+  ir,red,accX,accY,accZ,green
+  ```
+
+`UsbSerialSensorSource.parseLine()` accepts either length; a line that is
+neither 5 nor 6 fields is dropped as malformed.
 
 | Field | Type | Notes |
 |-------|------|-------|
@@ -53,8 +63,16 @@ ir,red,accX,accY,accZ
 | accX  | float | same unit convention as the simulator/BLE path (g or m/s² — the DSP pipeline only cares about relative motion) |
 | accY  | float | same |
 | accZ  | float | same |
+| green | integer | optional, 6th field only - raw ADC counts, unscaled |
 
-Example line: `90312,55480,0.02,-0.01,9.81`
+Example lines: `90312,55480,0.02,-0.01,9.81` (5-field) or
+`90312,55480,0.02,-0.01,9.81,120` (6-field, with green).
+
+There is deliberately **no leading timestamp field** in either form - see
+the next paragraph for why. (An earlier draft of this document said the
+6-field form would be `timestamp_ms,ir,red,accX,accY,accZ,green` - that
+was wrong; it would have contradicted the very next paragraph, which the
+actual code has always followed. Fixed here.)
 
 The app timestamps each sample on arrival using the phone's own clock
 (`SystemClock.elapsedRealtime()`) rather than expecting the firmware to
@@ -114,6 +132,15 @@ void loop() {
   Serial.print(accY, 3);
   Serial.print(',');
   Serial.println(accZ, 3);
+
+  // OPTIONAL 6th field, only if your hardware has a green LED (e.g. a
+  // MAX30105 instead of a MAX30102/30100) and you want SpO2-era per-
+  // sample green data. If added, use Serial.print(accZ, 3) (not println)
+  // above and append:
+  //   Serial.print(',');
+  //   Serial.println(readGreen());
+  // UsbSerialSensorSource.parseLine() already accepts either 5 or 6
+  // fields - no app-side change needed either way.
 }
 ```
 
@@ -124,9 +151,9 @@ Notes for whoever writes the real firmware:
   partial line if something stalls mid-sample.
 - Don't `Serial.print` anything else once the stream starts (no debug
   logging on the same UART) - `UsbSerialSensorSource.parseLine()` will
-  silently drop any line that isn't exactly 5 comma-separated numbers,
-  so stray text just becomes lost samples rather than a crash, but it's
-  still wasted bandwidth and confusing to debug.
+  silently drop any line that isn't exactly 5 (or, with green, 6)
+  comma-separated numbers, so stray text just becomes lost samples rather
+  than a crash, but it's still wasted bandwidth and confusing to debug.
 - Boot-log noise from the Arduino core itself (before `setup()` reaches
   the code above) is fine - it arrives before the app starts reading
   and/or gets dropped by the same malformed-line check.

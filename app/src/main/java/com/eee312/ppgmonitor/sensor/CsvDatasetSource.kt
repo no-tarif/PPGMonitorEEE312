@@ -128,15 +128,14 @@ class CsvDatasetSource(
         }
     }
 
-    /** Parses one "time,ir,red,accX,accY,accZ" line, with two SpO2-era
-     * extensions that don't change how the original 8 bundled datasets
-     * (always exactly 6 fields, ir/red always numeric) are read:
-     *   - an optional 7th trailing "green" field (ignored for now - the
-     *     sample model doesn't carry a green channel yet)
+    /** Parses one "time,ir,red,accX,accY,accZ[,green]" line, with two
+     * SpO2-era extensions that don't change how the original 8 bundled
+     * datasets (always exactly 6 fields, ir/red always numeric) are read:
+     *   - an optional 7th trailing "green" field (hw_sep16.csv)
      *   - an empty red field (single-wavelength captures, e.g.
-     *     "Hardware - Running 2") - parsed as 0, same sentinel meaning as
-     *     the bundled green column being absent; DatasetInfo.hasRed tells
-     *     callers whether that 0 is real data or a placeholder
+     *     "Hardware - Running 2") - parsed as null, not a 0 sentinel;
+     *     DatasetInfo.hasRed tells callers the same thing at the manifest
+     *     level, this is the per-sample equivalent
      * Returns null (dropping the line) on any other malformed input, same
      * tolerant approach as UsbSerialSensorSource.parseLine(). */
     private fun parseLine(line: String): Pair<Double, SensorSample>? {
@@ -148,10 +147,11 @@ class CsvDatasetSource(
             val sample = SensorSample(
                 timestampMs = SystemClock.elapsedRealtime(),
                 ir = f[1].trim().toInt(),
-                red = if (redField.isEmpty()) 0 else redField.toInt(),
+                red = if (redField.isEmpty()) null else redField.toInt(),
                 accX = f[3].trim().toFloat(),
                 accY = f[4].trim().toFloat(),
-                accZ = f[5].trim().toFloat()
+                accZ = f[5].trim().toFloat(),
+                green = if (f.size == 7) f[6].trim().toIntOrNull() else null
             )
             t to sample
         } catch (e: NumberFormatException) {

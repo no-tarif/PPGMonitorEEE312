@@ -55,7 +55,13 @@ class SessionRecorder(
         val cleanedPpg: Double,
         val newHrBpm: Double?,
         val sqi: Double,
-        val accMagnitude: Double
+        val accMagnitude: Double,
+        /** Raw sensor channels, read directly from SensorSample alongside
+         * (not through) PpgPipeline.Output - a parallel consumer, per
+         * Rule Zero: PpgPipeline itself never gains a red/green output. */
+        val irRaw: Int,
+        val redRaw: Int?,
+        val greenRaw: Int?
     )
 
     private val appContext = context.applicationContext
@@ -85,8 +91,17 @@ class SessionRecorder(
     }
 
     /** Call from any thread, once per DSP-processed sample. */
-    fun addSample(rawPpg: Double, cleanedPpg: Double, newHrBpm: Double?, sqi: Double, accMagnitude: Double) {
-        val sent = channel.trySend(RawEvent(rawPpg, cleanedPpg, newHrBpm, sqi, accMagnitude))
+    fun addSample(
+        rawPpg: Double,
+        cleanedPpg: Double,
+        newHrBpm: Double?,
+        sqi: Double,
+        accMagnitude: Double,
+        irRaw: Int,
+        redRaw: Int?,
+        greenRaw: Int?
+    ) {
+        val sent = channel.trySend(RawEvent(rawPpg, cleanedPpg, newHrBpm, sqi, accMagnitude, irRaw, redRaw, greenRaw))
         if (sent.isFailure) {
             Log.w(TAG, "Recorder channel full, dropping a sample (sustained rate exceeded write throughput)")
         }
@@ -114,7 +129,14 @@ class SessionRecorder(
                 rawPpg = e.rawPpg,
                 cleanedPpg = e.cleanedPpg,
                 accMagnitude = e.accMagnitude,
-                bpm = e.newHrBpm
+                bpm = e.newHrBpm,
+                irRaw = e.irRaw,
+                redRaw = e.redRaw,
+                greenRaw = e.greenRaw,
+                // Same gating as bpm - one sqi value per accepted HR
+                // window, not one per raw sample (see SampleEntity's
+                // header on why this pairing matters for quality checks).
+                sqi = if (e.newHrBpm != null) e.sqi else null
             )
         )
 

@@ -23,12 +23,25 @@ package com.eee312.ppgmonitor.model
  *                 pipeline only cares about relative motion, not the
  *                 absolute unit, since everything is band-passed and
  *                 normalized before use
+ *
+ * SpO2 addition: [red] is nullable (default null) rather than the old
+ * always-present Int, so a genuinely single-wavelength source (e.g. the
+ * "Hardware - Running 2" dataset, exported before this app captured a
+ * second channel) can say so precisely instead of overloading 0 as both
+ * "no red channel" and "red read exactly zero counts". [green] is new -
+ * nullable, default null, and NOT read by PpgPipeline (which only ever
+ * used [ir] - see its ppgChannelSelector) or by anything else yet; it
+ * exists purely so sensor sources that carry a green channel (sep16-style
+ * hardware) have somewhere to put it. Both defaults mean every existing
+ * SensorSample(...) call site compiles unchanged - see PpgPipeline's and
+ * MainActivity's header comments for why this is safe under Rule Zero.
  */
 data class SensorSample(
     val timestampMs: Long,
     val ir: Int,
-    val red: Int,
+    val red: Int? = null,
     val accX: Float,
     val accY: Float,
-    val accZ: Float
+    val accZ: Float,
+    val green: Int? = null
 )

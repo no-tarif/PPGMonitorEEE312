@@ -1,6 +1,7 @@
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.ksp)
+    alias(libs.plugins.room)
 }
 
 android {
@@ -30,6 +31,21 @@ android {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
     }
+    sourceSets {
+        getByName("androidTest") {
+            // MigrationTestHelper reads the exported schema JSON files to
+            // build a database at an OLD version before migrating it.
+            assets.srcDirs("$projectDir/schemas")
+        }
+    }
+}
+
+room {
+    // Room schema export (Rule Zero: non-destructive migrations need a
+    // captured prior-version schema to test against) - version 1's JSON
+    // was captured here BEFORE any Phase 3 entity change, from the exact
+    // schema already running on the phone.
+    schemaDirectory("$projectDir/schemas")
 }
 
 dependencies {
@@ -41,6 +57,12 @@ dependencies {
     implementation(libs.androidx.room.ktx)
     ksp(libs.androidx.room.compiler)
     testImplementation(libs.junit)
+    // Real org.json (not the Android SDK's test-stub, which throws on
+    // every call) - needed so a JVM unit test can actually exercise
+    // ReadingPostProcessor.qualityReportToJson() and catch bugs like the
+    // NaN-in-JSONObject.put() crash this project hit on a real device.
+    testImplementation(libs.orgJson)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(libs.androidx.junit)
+    androidTestImplementation(libs.androidx.room.testing)
 }

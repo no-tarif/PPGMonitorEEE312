@@ -5,12 +5,15 @@ import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
 
-/** exportSchema=false - a course project with one schema version, not
- * worth the schemas/ directory ceremony a real migration story needs. */
-@Database(entities = [ReadingEntity::class, SampleEntity::class], version = 1, exportSchema = false)
+@Database(
+    entities = [ReadingEntity::class, SampleEntity::class, Spo2WindowEntity::class],
+    version = 2,
+    exportSchema = true
+)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun readingDao(): ReadingDao
     abstract fun sampleDao(): SampleDao
+    abstract fun spo2WindowDao(): Spo2WindowDao
 
     companion object {
         @Volatile private var instance: AppDatabase? = null
@@ -19,7 +22,13 @@ abstract class AppDatabase : RoomDatabase() {
             instance ?: synchronized(this) {
                 instance ?: Room.databaseBuilder(
                     context.applicationContext, AppDatabase::class.java, "ppgmonitor.db"
-                ).build().also { instance = it }
+                )
+                    // Rule Zero: never fallbackToDestructiveMigration - an
+                    // existing reading (e.g. the "Reading 35-43" a
+                    // presentation depends on) must survive every upgrade.
+                    .addMigrations(MIGRATION_1_2)
+                    .build()
+                    .also { instance = it }
             }
     }
 }

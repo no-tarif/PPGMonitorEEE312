@@ -25,5 +25,28 @@ data class ReadingEntity(
     val minBpm: Double?,
     val maxBpm: Double?,
     val meanSqi: Double?,
-    val notes: String?
+    val notes: String?,
+    // --- SpO2 + quality summary (schema v2) - all null until the batch
+    // pass runs (or forever, for LEGACY readings that are never
+    // recomputed automatically - see ReadingPostProcessor). ---
+    val spo2Status: Spo2Status? = null,
+    val spo2Median: Double? = null,
+    val spo2Min: Double? = null,
+    val spo2Max: Double? = null,
+    val spo2AcceptedPct: Double? = null,
+    val rMedian: Double? = null,
+    val piIrMedian: Double? = null,
+    val piRedMedian: Double? = null,
+    val spo2Curve: String? = null,
+    /** e.g. "one-point offset: R_cal = 0.3683 ... offset -2.79%", or null
+     * when uncalibrated. Always label this "slope unverified" in the UI -
+     * see Spo2Config's header. */
+    val spo2CalibrationInfo: String? = null,
+    /** QualityOverall.name() - GOOD / MARGINAL / NOT_USABLE - or null if
+     * the quality report hasn't been computed yet. */
+    val qualityVerdict: String? = null,
+    /** The full QualityReport, serialized as JSON (six checks + values) -
+     * cheap to store, avoids a second entity/join for something only ever
+     * read as a whole per-reading blob. */
+    val qualityJson: String? = null
 )
