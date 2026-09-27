@@ -36,7 +36,7 @@
         android:textSize="13sp"
         android:textColor="#757575"
         android:layout_marginTop="4dp"
-        android:text="Simulated" />
+        android:text="" />
 
     <LinearLayout
         android:layout_width="match_parent"

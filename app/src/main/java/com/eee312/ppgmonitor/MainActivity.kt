@@ -32,7 +32,6 @@ import com.eee312.ppgmonitor.sensor.BleSensorSource
 import com.eee312.ppgmonitor.sensor.CsvDatasetSource
 import com.eee312.ppgmonitor.sensor.PlaybackSpeed
 import com.eee312.ppgmonitor.sensor.SensorSource
-import com.eee312.ppgmonitor.sensor.SimulatedSensorSource
 import com.eee312.ppgmonitor.sensor.UsbSerialSensorSource
 import com.eee312.ppgmonitor.ui.ChannelColors
 import com.eee312.ppgmonitor.ui.WaveformView
@@ -73,7 +72,7 @@ class MainActivity : AppCompatActivity() {
     // Every session is recorded automatically from Start to Stop (see
     // SessionRecorder's header for why it discards sessions under ~15s
     // and how it batches DB writes) - the same recorder instance is used
-    // no matter which SensorSource is active, so Simulated/Dataset/ESP32
+    // no matter which SensorSource is active, so Dataset/ESP32
     // all land in the same history through the same path.
     private var recorder: SessionRecorder? = null
 
@@ -87,7 +86,7 @@ class MainActivity : AppCompatActivity() {
     // Remembered alongside `recorder` purely so finalizeRecording() can
     // hand them to ReadingPostProcessor once the reading is saved -
     // SessionRecorder itself doesn't need to know about SpO2/quality.
-    private var activeSourceType: SourceType = SourceType.SIMULATED
+    private var activeSourceType: SourceType = SourceType.DATASET
     private var activeDatasetId: String? = null
     private var activeSampleRateHz: Double = PpgPipeline.FS_HZ
 
@@ -173,7 +172,6 @@ class MainActivity : AppCompatActivity() {
             }
             R.id.rbUsb -> startWithSource(UsbSerialSensorSource(applicationContext), SourceType.ESP32_USB, null)
             R.id.rbBle -> onBleStartRequested()
-            else -> startWithSource(SimulatedSensorSource(), SourceType.SIMULATED, null)
         }
     }
 

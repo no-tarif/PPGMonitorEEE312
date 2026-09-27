@@ -4,7 +4,7 @@ import com.eee312.ppgmonitor.model.SensorSample
 
 /**
  * Anything that can produce a live stream of [SensorSample]s implements
- * this - [SimulatedSensorSource] (no hardware needed) and
+ * this - [CsvDatasetSource] (no hardware needed) and
  * [BleSensorSource] (the real ESP32) are interchangeable behind it, so
  * the ViewModel/pipeline never needs to know which one is active.
  *
@@ -22,7 +22,7 @@ interface SensorSource {
 
     /** Optional: called once if this source's stream ends on its own
      * (e.g. [CsvDatasetSource] reaching the end of a non-looping dataset)
-     * rather than being stopped via [stop]. Live sources (Simulated/BLE/
+     * rather than being stopped via [stop]. Live sources (BLE/
      * USB) never end on their own, so the default no-op means they don't
      * need to implement this - MainActivity wires it generically on
      * whichever source is active without needing to know which concrete

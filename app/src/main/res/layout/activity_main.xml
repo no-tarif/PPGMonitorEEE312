@@ -72,17 +72,11 @@
         android:layout_marginBottom="8dp">
 
         <RadioButton
-            android:id="@+id/rbSimulated"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Simulated"
-            android:checked="true" />
-
-        <RadioButton
             android:id="@+id/rbDataset"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="Dataset" />
+            android:text="Dataset"
+            android:checked="true" />
 
         <RadioButton
             android:id="@+id/rbUsb"
