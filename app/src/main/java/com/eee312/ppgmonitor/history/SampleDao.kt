@@ -33,6 +33,15 @@ interface SampleDao {
     @Query("UPDATE samples SET tSec = tSec * :factor WHERE readingId = :readingId")
     suspend fun rescaleTime(readingId: Long, factor: Double)
 
+    @Query(
+        "SELECT id, tSec, tSrc, rawPpg, irRaw, redRaw, greenRaw, accX, accY, accZ, flags FROM samples " +
+            "WHERE readingId = :readingId AND id > :afterId ORDER BY id ASC LIMIT :limit"
+    )
+    suspend fun getRawChunk(readingId: Long, afterId: Long, limit: Int): List<RawExportRow>
+
+    @Query("SELECT EXISTS(SELECT 1 FROM samples WHERE readingId = :readingId AND greenRaw IS NOT NULL)")
+    suspend fun hasGreen(readingId: Long): Boolean
+
     @Query("SELECT COUNT(*) FROM samples WHERE readingId = :readingId")
     suspend fun countForReading(readingId: Long): Int
 

@@ -3,7 +3,6 @@ package com.eee312.ppgmonitor.history
 import android.app.AlertDialog
 import android.net.Uri
 import android.os.Bundle
-import android.provider.DocumentsContract
 import android.view.View
 import android.widget.Button
 import android.widget.EditText
@@ -68,18 +67,11 @@ class HistoryDetailActivity : AppCompatActivity() {
     private var overlayIr: FloatArray? = null
     private var overlayRed: FloatArray? = null
 
-    /** User picked a folder via SAF - <name>.csv, <name>_spo2_windows.csv
-     * and <name>_summary.txt are all written into it. A single
-     * CreateDocument() can't produce three files, hence OpenDocumentTree
-     * instead of the old single-file export launcher. */
-    private val exportLauncher = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { treeUri ->
+    /** Export = the raw samples as received, one CSV in the canonical
+     * capture layout (see RawCsvExporter), streamed off the main thread. */
+    private val exportLauncher = registerForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) { uri ->
         val r = reading
-        if (treeUri != null && r != null) {
-            contentResolver.takePersistableUriPermission(
-                treeUri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-            )
-            lifecycleScope.launch { exportAllFiles(r, treeUri) }
-        }
+        if (uri != null && r != null) lifecycleScope.launch { exportRaw(r, uri) }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -101,6 +93,9 @@ class HistoryDetailActivity : AppCompatActivity() {
         qualityTable = findViewById(R.id.qualityTable)
         btnOptions = findViewById(R.id.btnOptions)
         btnOptions.setOnClickListener { showOptionsMenu() }
+        findViewById<Button>(R.id.btnExport).setOnClickListener {
+            reading?.let { exportLauncher.launch(RawCsvExporter.fileName(it.name, it.startedAtEpochMs)) }
+        }
         btnToggleOverlay.isEnabled = false
         applyAdvancedVisibility()
         btnToggleOverlay.setOnCheckedChangeListener { _, checked ->
@@ -394,7 +389,6 @@ class HistoryDetailActivity : AppCompatActivity() {
         val menu = PopupMenu(this, btnOptions)
         menu.menu.add("Rename")
         menu.menu.add("Delete")
-        menu.menu.add("Export")
         if (r.spo2Status == Spo2Status.OK || r.spo2Status == Spo2Status.NO_VALID_WINDOWS) {
             menu.menu.add("Calibrate against reference oximeter…")
             if (r.spo2CalibrationInfo != null) menu.menu.add("Remove calibration")
@@ -403,7 +397,6 @@ class HistoryDetailActivity : AppCompatActivity() {
             when (item.title) {
                 "Rename" -> { showRenameDialog(r); true }
                 "Delete" -> { showDeleteConfirm(r); true }
-                "Export" -> { exportLauncher.launch(null); true }
                 "Calibrate against reference oximeter…" -> { showCalibrateDialog(r); true }
                 "Remove calibration" -> { removeCalibration(r); true }
                 else -> false
@@ -509,64 +502,12 @@ class HistoryDetailActivity : AppCompatActivity() {
             .show()
     }
 
-    /** Writes <name>.csv (existing columns first and in the same order,
-     * then irRaw,redRaw,greenRaw appended), <name>_spo2_windows.csv, and
-     * <name>_summary.txt into the SAF tree the user picked. */
-    private suspend fun exportAllFiles(r: ReadingEntity, treeUri: Uri) {
-        val safeName = r.name.replace(Regex("[^A-Za-z0-9_-]"), "_")
-        withContext(Dispatchers.IO) {
-            val samples = db.sampleDao().getForReading(r.id)
-            val windows = db.spo2WindowDao().getForReading(r.id)
-
-            writeIntoTree(treeUri, "$safeName.csv", "text/csv") { w ->
-                w.write("tSec,rawPpg,cleanedPpg,accMagnitude,bpm,irRaw,redRaw,greenRaw\n")
-                for (s in samples) {
-                    w.write(
-                        "${s.tSec},${s.rawPpg},${s.cleanedPpg},${s.accMagnitude},${s.bpm ?: ""}," +
-                            "${s.irRaw ?: ""},${s.redRaw ?: ""},${s.greenRaw ?: ""}\n"
-                    )
-                }
-            }
-
-            writeIntoTree(treeUri, "${safeName}_spo2_windows.csv", "text/csv") { w ->
-                w.write("tSec,R,SpO2_percent,PI_IR,PI_RED,valid,rejectReason\n")
-                for (win in windows) {
-                    w.write("${win.tSec},${win.r},${win.spo2},${win.piIr},${win.piRed},${win.valid},${win.rejectReason}\n")
-                }
-            }
-
-            writeIntoTree(treeUri, "${safeName}_summary.txt", "text/plain") { w ->
-                w.write(buildSummaryText(r, windows.size))
-            }
+    private suspend fun exportRaw(r: ReadingEntity, uri: Uri) {
+        try {
+            val rows = ReadingExport.writeRawCsv(applicationContext, r, uri)
+            Toast.makeText(this, "Exported ${r.name}: $rows raw samples", Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            Toast.makeText(this, "Export failed: ${e.message}", Toast.LENGTH_LONG).show()
         }
-        Toast.makeText(this, "Exported ${r.name}", Toast.LENGTH_SHORT).show()
-    }
-
-    private fun writeIntoTree(treeUri: Uri, displayName: String, mimeType: String, body: (java.io.Writer) -> Unit) {
-        val docUri = DocumentsContract.createDocument(contentResolver, treeUri, mimeType, displayName)
-            ?: return
-        contentResolver.openOutputStream(docUri)?.bufferedWriter()?.use(body)
-    }
-
-    private fun buildSummaryText(r: ReadingEntity, windowCount: Int): String = buildString {
-        appendLine("Reading: ${r.name}")
-        appendLine("Duration: ${r.durationSec} s, sample rate ${r.sampleRateHz} Hz")
-        appendLine()
-        appendLine("--- SpO2 ---")
-        appendLine("Status: ${r.spo2Status ?: "unknown"}")
-        if (r.spo2Status == Spo2Status.OK || r.spo2Status == Spo2Status.NO_VALID_WINDOWS) {
-            appendLine("Windows: $windowCount, accepted ${"%.1f".format(r.spo2AcceptedPct ?: 0.0)}%")
-            appendLine("Median R: ${r.rMedian ?: "--"}")
-            appendLine("Median PI IR / RED: ${r.piIrMedian ?: "--"} / ${r.piRedMedian ?: "--"}")
-            appendLine("Curve: ${r.spo2Curve ?: "--"}")
-            appendLine("Calibration: ${r.spo2CalibrationInfo ?: "none (uncalibrated)"}")
-            r.spo2Median?.let { appendLine("Accepted SpO2: median %.1f%%, range %.1f-%.1f%%".format(it, r.spo2Min, r.spo2Max)) }
-        }
-        appendLine()
-        appendLine("--- Recording quality ---")
-        appendLine("Verdict: ${r.qualityVerdict ?: "not computed"}")
-        r.qualityJson?.let { appendLine(it) }
-        appendLine()
-        appendLine("Engineering estimate from a generic published curve — not for medical use.")
     }
 }

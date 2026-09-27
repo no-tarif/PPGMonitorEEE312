@@ -33,7 +33,14 @@ class HistoryActivity : AppCompatActivity() {
         val reading = exportTarget
         exportTarget = null
         if (uri != null && reading != null) {
-            lifecycleScope.launch { writeCsv(reading, uri) }
+            lifecycleScope.launch {
+                try {
+                    val rows = ReadingExport.writeRawCsv(applicationContext, reading, uri)
+                    Toast.makeText(this@HistoryActivity, "Exported ${reading.name}: $rows raw samples", Toast.LENGTH_SHORT).show()
+                } catch (e: Exception) {
+                    Toast.makeText(this@HistoryActivity, "Export failed: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+            }
         }
     }
 
@@ -73,14 +80,14 @@ class HistoryActivity : AppCompatActivity() {
         val menu = PopupMenu(this, anchor)
         menu.menu.add("Rename")
         menu.menu.add("Delete")
-        menu.menu.add("Export as CSV")
+        menu.menu.add("Export")
         menu.setOnMenuItemClickListener { item ->
             when (item.title) {
                 "Rename" -> { showRenameDialog(reading); true }
                 "Delete" -> { showDeleteConfirm(reading); true }
-                "Export as CSV" -> {
+                "Export" -> {
                     exportTarget = reading
-                    exportLauncher.launch("${safeFileName(reading.name)}.csv")
+                    exportLauncher.launch(RawCsvExporter.fileName(reading.name, reading.startedAtEpochMs))
                     true
                 }
                 else -> false
@@ -114,19 +121,4 @@ class HistoryActivity : AppCompatActivity() {
             .setNegativeButton("Cancel", null)
             .show()
     }
-
-    private suspend fun writeCsv(reading: ReadingEntity, uri: Uri) {
-        val samples = withContext(Dispatchers.IO) { db.sampleDao().getForReading(reading.id) }
-        withContext(Dispatchers.IO) {
-            contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { w ->
-                w.write("tSec,rawPpg,cleanedPpg,accMagnitude,bpm\n")
-                for (s in samples) {
-                    w.write("${s.tSec},${s.rawPpg},${s.cleanedPpg},${s.accMagnitude},${s.bpm ?: ""}\n")
-                }
-            }
-        }
-        Toast.makeText(this, "Exported ${reading.name}", Toast.LENGTH_SHORT).show()
-    }
-
-    private fun safeFileName(name: String) = name.replace(Regex("[^A-Za-z0-9_-]"), "_")
 }
