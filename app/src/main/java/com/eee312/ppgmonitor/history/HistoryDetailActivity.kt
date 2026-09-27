@@ -4,6 +4,7 @@ import android.app.AlertDialog
 import android.net.Uri
 import android.os.Bundle
 import android.provider.DocumentsContract
+import android.view.View
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -26,6 +27,7 @@ import com.eee312.ppgmonitor.ui.ChartVBand
 import com.eee312.ppgmonitor.ui.LineStyle
 import com.eee312.ppgmonitor.ui.TrendChartView
 import com.eee312.ppgmonitor.ui.WaveformView
+import com.eee312.ppgmonitor.ui.ZoomableWaveformView
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -43,11 +45,13 @@ class HistoryDetailActivity : AppCompatActivity() {
     companion object {
         const val EXTRA_READING_ID = "reading_id"
         private val DEFAULT_WARMUP_SEC = Spo2Config().warmupSec
+        private const val WAVEFORM_CHUNK = 20_000
     }
 
     private lateinit var tvName: TextView
     private lateinit var tvSubtitle: TextView
-    private lateinit var tvStats: TextView
+    private lateinit var summaryTable: LinearLayout
+    private lateinit var waveformZoom: ZoomableWaveformView
     private lateinit var tvSpo2: TextView
     private lateinit var tvQuality: TextView
     private lateinit var waveformFull: WaveformView
@@ -84,7 +88,8 @@ class HistoryDetailActivity : AppCompatActivity() {
 
         tvName = findViewById(R.id.tvDetailName)
         tvSubtitle = findViewById(R.id.tvDetailSubtitle)
-        tvStats = findViewById(R.id.tvStats)
+        summaryTable = findViewById(R.id.summaryTable)
+        waveformZoom = findViewById(R.id.waveformZoom)
         tvSpo2 = findViewById(R.id.tvSpo2)
         tvQuality = findViewById(R.id.tvQuality)
         waveformFull = findViewById(R.id.waveformFull)
@@ -97,6 +102,7 @@ class HistoryDetailActivity : AppCompatActivity() {
         btnOptions = findViewById(R.id.btnOptions)
         btnOptions.setOnClickListener { showOptionsMenu() }
         btnToggleOverlay.isEnabled = false
+        applyAdvancedVisibility()
         btnToggleOverlay.setOnCheckedChangeListener { _, checked ->
             val ir = overlayIr
             val red = overlayRed
@@ -130,27 +136,75 @@ class HistoryDetailActivity : AppCompatActivity() {
             }
             reading = r
             bindHeader(r)
+            loadWaveform(r)
 
-            val samples = withContext(Dispatchers.IO) { db.sampleDao().getForReading(readingId) }
+            val bpmSeries = withContext(Dispatchers.IO) { db.sampleDao().getBpmSeries(readingId) }
             val windows = withContext(Dispatchers.IO) { db.spo2WindowDao().getForReading(readingId) }
-
-            waveformFull.setStaticData(FloatArray(samples.size) { samples[it].cleanedPpg.toFloat() })
-
-            if (samples.isNotEmpty() && samples.all { it.irRaw != null && it.redRaw != null }) {
-                overlayIr = FloatArray(samples.size) { samples[it].irRaw!!.toFloat() }
-                overlayRed = FloatArray(samples.size) { samples[it].redRaw!!.toFloat() }
-                btnToggleOverlay.isEnabled = true
-            }
-
-            bindBpmSqiChart(samples)
+            bindBpmChart(bpmSeries)
             bindSpo2Chart(windows)
-            bindRChart(windows)
-            bindPiChart(windows)
-            bindQualityTable(r)
+
+            if (HistoryDisplayConfig.SHOW_ADVANCED_METRICS) {
+                val samples = withContext(Dispatchers.IO) { db.sampleDao().getForReading(readingId) }
+                waveformFull.setStaticData(FloatArray(samples.size) { samples[it].cleanedPpg.toFloat() })
+                if (samples.isNotEmpty() && samples.all { it.irRaw != null && it.redRaw != null }) {
+                    overlayIr = FloatArray(samples.size) { samples[it].irRaw!!.toFloat() }
+                    overlayRed = FloatArray(samples.size) { samples[it].redRaw!!.toFloat() }
+                    btnToggleOverlay.isEnabled = true
+                }
+                bindSqiIntoBpmChart(samples)
+                bindRChart(windows)
+                bindPiChart(windows)
+                bindQualityTable(r)
+            }
         }
     }
 
-    private fun bindBpmSqiChart(samples: List<SampleEntity>) {
+    private fun applyAdvancedVisibility() {
+        val v = if (HistoryDisplayConfig.SHOW_ADVANCED_METRICS) View.VISIBLE else View.GONE
+        for (id in intArrayOf(R.id.tvSpo2, R.id.tvQuality, R.id.overlayPanel, R.id.advancedPanel)) {
+            findViewById<View>(id).visibility = v
+        }
+        if (HistoryDisplayConfig.SHOW_ADVANCED_METRICS) {
+            findViewById<TextView>(R.id.tvBpmChartLabel).text =
+                "BPM over time (blue) with per-window signal quality (purple, 0-1 axis)"
+        }
+    }
+
+    /** Reads cleanedPpg for the whole reading in id-keyed chunks off the
+     * main thread and hands the full array to the zoomable chart. */
+    private suspend fun loadWaveform(r: ReadingEntity) {
+        val values = withContext(Dispatchers.IO) {
+            val n = db.sampleDao().countForReading(r.id)
+            val out = FloatArray(n)
+            var filled = 0
+            var afterId = 0L
+            while (filled < n) {
+                val chunk = db.sampleDao().getWaveformChunk(r.id, afterId, WAVEFORM_CHUNK)
+                if (chunk.isEmpty()) break
+                for (p in chunk) { if (filled < n) out[filled++] = p.cleanedPpg.toFloat() }
+                afterId = chunk.last().id
+            }
+            if (filled < n) out.copyOf(filled) else out
+        }
+        waveformZoom.emptyText = "No samples stored for this reading"
+        waveformZoom.setData(values, r.sampleRateHz)
+    }
+
+    private fun bindBpmChart(points: List<BpmPoint>) {
+        if (points.isEmpty()) return
+        chartBpmSqi.setData(
+            listOf(
+                ChartSeries(
+                    FloatArray(points.size) { points[it].tSec.toFloat() },
+                    FloatArray(points.size) { points[it].bpm.toFloat() },
+                    ChannelColors.BPM, LineStyle.SOLID
+                )
+            )
+        )
+    }
+
+    /** Advanced only: the old BPM + per-window SQI overlay. */
+    private fun bindSqiIntoBpmChart(samples: List<SampleEntity>) {
         val bpmXs = ArrayList<Float>()
         val bpmYs = ArrayList<Float>()
         val sqiXs = ArrayList<Float>()
@@ -256,16 +310,53 @@ class HistoryDetailActivity : AppCompatActivity() {
         }
         tvSubtitle.text = "$sourceLabel · ${dateFormat.format(r.startedAtEpochMs)}"
 
-        val totalSec = r.durationSec.toInt()
-        tvStats.text = buildString {
-            append("Duration: %d:%02d\n".format(totalSec / 60, totalSec % 60))
-            append("Avg / Min / Max BPM: ${fmt(r.avgBpm)} / ${fmt(r.minBpm)} / ${fmt(r.maxBpm)}\n")
-            append("Mean signal quality: ${r.meanSqi?.let { "%.0f%%".format(it * 100) } ?: "--"}\n")
-            append("Sample rate: ${r.sampleRateHz.toInt()} Hz · Source: $sourceLabel")
-        }
-
+        bindSummary(r, sourceLabel)
         tvSpo2.text = spo2SummaryText(r)
         tvQuality.text = "Recording quality: ${r.qualityVerdict ?: "computing..."}"
+    }
+
+    /** Exactly the eight summary fields - nothing else. */
+    private fun bindSummary(r: ReadingEntity, sourceLabel: String) {
+        val totalSec = r.durationSec.toInt()
+        val rows = listOf(
+            "Source" to sourceLabel,
+            "Duration" to "%d:%02d".format(totalSec / 60, totalSec % 60),
+            "Sample rate" to "%.2f Hz".format(r.sampleRateHz),
+            "Avg BPM" to fmt(r.avgBpm),
+            "Min BPM" to fmt(r.minBpm),
+            "Max BPM" to fmt(r.maxBpm),
+            "SpO2" to spo2ShortText(r),
+            "Signal quality" to (r.meanSqi?.let { "%.0f%%".format(it * 100) } ?: "--")
+        )
+        summaryTable.removeAllViews()
+        for ((label, value) in rows) {
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 3, 0, 3) }
+            row.addView(TextView(this).apply {
+                text = label
+                textSize = 14f
+                setTextColor(android.graphics.Color.parseColor("#616161"))
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 0.4f)
+            })
+            row.addView(TextView(this).apply {
+                text = value
+                textSize = 14f
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 0.6f)
+            })
+            summaryTable.addView(row)
+        }
+    }
+
+    /** "97%" or "N/A (short reason)". */
+    private fun spo2ShortText(r: ReadingEntity): String = when (r.spo2Status) {
+        null, Spo2Status.PENDING -> "computing…"
+        Spo2Status.OK -> r.spo2Median?.let {
+            "%.0f%%".format(it) + if (r.spo2CalibrationInfo != null) " (one-point calibrated)" else ""
+        } ?: "N/A (no valid windows)"
+        Spo2Status.LEGACY -> "N/A (recorded before SpO2 support)"
+        Spo2Status.NOT_ELIGIBLE -> "N/A (not computed for this source)"
+        Spo2Status.SINGLE_WAVELENGTH -> "N/A (no red channel)"
+        Spo2Status.TOO_SHORT -> "N/A (recording too short)"
+        Spo2Status.NO_VALID_WINDOWS -> "N/A (no valid windows)"
     }
 
     private fun fmt(v: Double?) = v?.let { "%.0f".format(it) } ?: "--"
@@ -379,8 +470,10 @@ class HistoryDetailActivity : AppCompatActivity() {
         bindHeader(r)
         val windows = withContext(Dispatchers.IO) { db.spo2WindowDao().getForReading(readingId) }
         bindSpo2Chart(windows)
-        bindRChart(windows)
-        bindPiChart(windows)
+        if (HistoryDisplayConfig.SHOW_ADVANCED_METRICS) {
+            bindRChart(windows)
+            bindPiChart(windows)
+        }
     }
 
     private fun showRenameDialog(r: ReadingEntity) {

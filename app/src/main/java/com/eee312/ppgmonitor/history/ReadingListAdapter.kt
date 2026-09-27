@@ -37,6 +37,9 @@ class ReadingListAdapter(
         view.findViewById<TextView>(R.id.tvSpo2Row).text = spo2RowText(reading)
 
         val chip = view.findViewById<TextView>(R.id.tvQualityChip)
+        // The quality chip is the recording-quality index - hidden unless
+        // HistoryDisplayConfig.SHOW_ADVANCED_METRICS is switched back on.
+        chip.visibility = if (HistoryDisplayConfig.SHOW_ADVANCED_METRICS) View.VISIBLE else View.GONE
         chip.text = qualityChipText(reading.qualityVerdict)
         (chip.background.mutate() as GradientDrawable).setColor(qualityChipColor(reading.qualityVerdict))
 

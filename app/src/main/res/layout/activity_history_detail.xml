@@ -50,42 +50,54 @@
         android:textSize="12sp"
         android:textStyle="bold" />
 
-    <TextView
-        android:id="@+id/tvStats"
+    <LinearLayout
+        android:id="@+id/summaryTable"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:textSize="14sp"
+        android:orientation="vertical"
         android:layout_marginTop="4dp"
-        android:layout_marginBottom="4dp" />
+        android:layout_marginBottom="12dp" />
 
+    <!-- Advanced (HistoryDisplayConfig.SHOW_ADVANCED_METRICS): extra SpO2
+         details and the recording-quality verdict. -->
     <TextView
         android:id="@+id/tvSpo2"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:textSize="14sp"
+        android:textSize="13sp"
+        android:visibility="gone"
         android:layout_marginBottom="4dp" />
 
     <TextView
         android:id="@+id/tvQuality"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:textSize="14sp"
+        android:textSize="13sp"
+        android:visibility="gone"
+        android:layout_marginBottom="12dp" />
+
+    <!-- PPG graph: the whole recording, pinch to zoom, drag to scroll -->
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="PPG (whole recording) - pinch to zoom, drag to scroll"
+        android:textSize="12sp"
+        android:textStyle="bold" />
+
+    <com.eee312.ppgmonitor.ui.ZoomableWaveformView
+        android:id="@+id/waveformZoom"
+        android:layout_width="match_parent"
+        android:layout_height="180dp"
+        android:layout_marginTop="4dp"
         android:layout_marginBottom="16dp" />
 
-    <!-- PPG waveform -->
+    <!-- Advanced: raw IR/Red overlay on the old fixed waveform -->
     <LinearLayout
+        android:id="@+id/overlayPanel"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:gravity="center_vertical">
-
-        <TextView
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="Cleaned PPG waveform (full reading)"
-            android:textSize="12sp"
-            android:textStyle="bold" />
+        android:orientation="vertical"
+        android:visibility="gone">
 
         <ToggleButton
             android:id="@+id/btnToggleOverlay"
@@ -95,20 +107,21 @@
             android:textOff="Raw IR/Red: off"
             android:textSize="10sp"
             android:text="Raw IR/Red: off" />
-    </LinearLayout>
 
-    <com.eee312.ppgmonitor.ui.WaveformView
-        android:id="@+id/waveformFull"
-        android:layout_width="match_parent"
-        android:layout_height="160dp"
-        android:layout_marginTop="4dp"
-        android:layout_marginBottom="16dp" />
+        <com.eee312.ppgmonitor.ui.WaveformView
+            android:id="@+id/waveformFull"
+            android:layout_width="match_parent"
+            android:layout_height="160dp"
+            android:layout_marginTop="4dp"
+            android:layout_marginBottom="16dp" />
+    </LinearLayout>
 
     <!-- BPM + SQI -->
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="BPM over time (blue) with per-window signal quality (purple, 0-1 axis)"
+        android:id="@+id/tvBpmChartLabel"
+        android:text="BPM over time"
         android:textSize="12sp"
         android:textStyle="bold" />
 
@@ -124,7 +137,7 @@
         android:id="@+id/tvSpo2ChartLabel"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="SpO2 per window (filled = accepted, hollow = rejected; dashed line = 100% physical limit)"
+        android:text="SpO2 per window (filled = valid, hollow = rejected; dashed line = 100%)"
         android:textSize="12sp"
         android:textStyle="bold" />
 
@@ -134,6 +147,14 @@
         android:layout_height="160dp"
         android:layout_marginTop="4dp"
         android:layout_marginBottom="16dp" />
+
+    <!-- Advanced: R, perfusion index, quality report -->
+    <LinearLayout
+        android:id="@+id/advancedPanel"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:visibility="gone">
 
     <!-- R -->
     <TextView
@@ -190,6 +211,8 @@
         android:layout_height="wrap_content"
         android:orientation="vertical"
         android:layout_marginBottom="16dp" />
+
+    </LinearLayout>
 
     <TextView
         android:layout_width="match_parent"
