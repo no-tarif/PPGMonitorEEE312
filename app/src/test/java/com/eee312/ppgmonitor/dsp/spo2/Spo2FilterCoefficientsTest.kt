@@ -50,8 +50,12 @@ class Spo2FilterCoefficientsTest {
         assertSosMatches(expected, Spo2FilterCoefficients.BANDPASS_0_5_4HZ_AT_50_3HZ)
     }
 
-    @Test(expected = IllegalArgumentException::class)
-    fun `unsupported rate throws rather than silently approximating`() {
-        Spo2FilterCoefficients.bandpassFor(50.0)
+    @Test
+    fun `other rates are designed for that exact rate instead of throwing or snapping`() {
+        // Same design as the pipeline's 50 Hz table (scipy output, 12 digits).
+        assertSosMatches(
+            com.eee312.ppgmonitor.dsp.FilterCoefficients.BANDPASS_0_5_4HZ_AT_50HZ,
+            Spo2FilterCoefficients.bandpassFor(50.0)
+        )
     }
 }

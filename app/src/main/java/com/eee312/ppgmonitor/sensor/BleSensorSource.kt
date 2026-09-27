@@ -13,15 +13,13 @@ import android.bluetooth.le.ScanResult
 import android.content.Context
 import android.os.SystemClock
 import com.eee312.ppgmonitor.model.SensorSample
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
 import java.util.UUID
 
 /**
- * BLE client for the ESP32 sensor rig. See BLE_CONTRACT.md (project
- * root) for the full packet-format spec this parses against - share
- * that file with whoever owns the ESP32 firmware BEFORE they start
- * writing it, so both sides agree on one contract up front.
+ * BLE client for the ESP32 sensor rig. The packet contract is in
+ * docs/ESP32_LINK_GUIDE.md (Q3) and [BlePacketParser]. NOTE: the rig in
+ * HARDWARE_SETUP_GUIDE.md has NO BLE firmware (PpgStream.ino is USB-only),
+ * so nothing currently sends these packets.
  *
  * STATUS: structurally complete (scan -> connect -> discover -> enable
  * notifications -> parse) but UNTESTED against real firmware - at the
@@ -33,7 +31,7 @@ import java.util.UUID
  * code and does not depend on the payload format.
  *
  * Uses Nordic UART Service (NUS) UUIDs deliberately - see
- * BLE_CONTRACT.md for why.
+ * docs/ESP32_LINK_GUIDE.md for why.
  *
  * The caller (MainActivity) is responsible for requesting the BLE
  * runtime permissions (BLUETOOTH_SCAN/BLUETOOTH_CONNECT on API 31+,
@@ -49,14 +47,14 @@ class BleSensorSource(
     private val targetDeviceNamePrefix: String = "PPG"
 ) : SensorSource {
 
-    override val sampleRateHz: Double = 25.0 // must match the firmware's actual output rate
+    override val sampleRateHz: Double = HardwareProfile.NOMINAL_RATE_HZ // measured and followed at runtime
 
     companion object {
         val SERVICE_UUID: UUID = UUID.fromString("6e400001-b5a3-f393-e0a9-e50e24dcca9e")
         val TX_CHARACTERISTIC_UUID: UUID = UUID.fromString("6e400003-b5a3-f393-e0a9-e50e24dcca9e")
         val RX_CHARACTERISTIC_UUID: UUID = UUID.fromString("6e400002-b5a3-f393-e0a9-e50e24dcca9e")
         val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
-        const val PACKET_SIZE_BYTES = 18
+        const val PACKET_SIZE_BYTES = BlePacketParser.PACKET_SIZE_BYTES
     }
 
     private var bluetoothGatt: BluetoothGatt? = null
@@ -97,12 +95,12 @@ class BleSensorSource(
             }
             val service = gatt.getService(SERVICE_UUID)
             if (service == null) {
-                onStatusCb?.invoke("Service $SERVICE_UUID not found - check firmware UUIDs against BLE_CONTRACT.md")
+                onStatusCb?.invoke("Service $SERVICE_UUID not found - check firmware UUIDs against docs/ESP32_LINK_GUIDE.md")
                 return
             }
             val txChar = service.getCharacteristic(TX_CHARACTERISTIC_UUID)
             if (txChar == null) {
-                onStatusCb?.invoke("TX characteristic not found - check firmware UUIDs against BLE_CONTRACT.md")
+                onStatusCb?.invoke("TX characteristic not found - check firmware UUIDs against docs/ESP32_LINK_GUIDE.md")
                 return
             }
 
@@ -136,29 +134,9 @@ class BleSensorSource(
         parsePacket(bytes)?.let { onSampleCb?.invoke(it) }
     }
 
-    /** Parses one PACKET_SIZE_BYTES packet per BLE_CONTRACT.md. Returns
-     * null (dropping the packet) on a length mismatch - change this
-     * together with PACKET_SIZE_BYTES if the firmware's layout differs. */
-    private fun parsePacket(bytes: ByteArray?): SensorSample? {
-        if (bytes == null || bytes.size < PACKET_SIZE_BYTES) return null
-
-        val buf = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
-        buf.int // device-side timestamp - read but intentionally not used, see class header
-        val ir = buf.int
-        val red = buf.int
-        val accX = buf.short / 1000f
-        val accY = buf.short / 1000f
-        val accZ = buf.short / 1000f
-
-        return SensorSample(
-            timestampMs = SystemClock.elapsedRealtime(),
-            ir = ir,
-            red = red,
-            accX = accX,
-            accY = accY,
-            accZ = accZ
-        )
-    }
+    /** See [BlePacketParser] for the 18-byte layout (and its +/-3.3 g limit). */
+    private fun parsePacket(bytes: ByteArray?): SensorSample? =
+        BlePacketParser.parse(bytes, SystemClock.elapsedRealtime())
 
     override fun start(onSample: (SensorSample) -> Unit, onStatus: (String) -> Unit) {
         onSampleCb = onSample

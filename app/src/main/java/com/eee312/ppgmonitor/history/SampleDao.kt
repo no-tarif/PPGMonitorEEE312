@@ -28,6 +28,11 @@ interface SampleDao {
     )
     suspend fun getWaveformChunk(readingId: Long, afterId: Long, limit: Int): List<WaveformPoint>
 
+    /** Scales a reading's time base (used once, when a live reading's
+     * measured rate differs from the nominal rate it was recorded with). */
+    @Query("UPDATE samples SET tSec = tSec * :factor WHERE readingId = :readingId")
+    suspend fun rescaleTime(readingId: Long, factor: Double)
+
     @Query("SELECT COUNT(*) FROM samples WHERE readingId = :readingId")
     suspend fun countForReading(readingId: Long): Int
 

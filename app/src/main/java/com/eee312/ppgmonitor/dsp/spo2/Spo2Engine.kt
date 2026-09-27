@@ -64,7 +64,7 @@ object Spo2Engine {
         }
 
         // --- Pulsatile components (DC always comes from the RAW signal) ---
-        val sos = Spo2FilterCoefficients.bandpassFor(fsHz)
+        val sos = Spo2FilterCoefficients.bandpassFor(fsHz, cfg.effectiveBandHz(fsHz))
         val irAc = Spo2Filtering.sosFiltFilt(sos, Spo2Filtering.linearDetrend(ir))
         val redAc = Spo2Filtering.sosFiltFilt(sos, Spo2Filtering.linearDetrend(red))
 

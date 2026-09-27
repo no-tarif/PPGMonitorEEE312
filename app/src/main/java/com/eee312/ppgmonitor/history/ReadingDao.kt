@@ -30,6 +30,9 @@ interface ReadingDao {
         meanSqi: Double?
     )
 
+    @Query("UPDATE readings SET sampleRateHz = :sampleRateHz, measuredRateHz = :measuredRateHz WHERE id = :id")
+    suspend fun updateRates(id: Long, sampleRateHz: Double, measuredRateHz: Double?)
+
     @Query("UPDATE readings SET name = :name WHERE id = :id")
     suspend fun rename(id: Long, name: String)
 

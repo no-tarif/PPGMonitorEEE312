@@ -48,5 +48,13 @@ data class ReadingEntity(
     /** The full QualityReport, serialized as JSON (six checks + values) -
      * cheap to store, avoids a second entity/join for something only ever
      * read as a whole per-reading blob. */
-    val qualityJson: String? = null
+    val qualityJson: String? = null,
+    // --- v3 ---
+    /** Rate measured from the source's timestamps (live: arrival time vs
+     * sample slot; file/dataset: median time step). Null for pre-v3
+     * readings - the UI then shows [sampleRateHz]. */
+    val measuredRateHz: Double? = null,
+    /** Extra source text, e.g. the uploaded file's name for FILE readings
+     * ("File: walk.xlsx"). */
+    val sourceLabel: String? = null
 )

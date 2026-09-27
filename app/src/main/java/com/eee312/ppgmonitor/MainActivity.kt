@@ -19,6 +19,8 @@ import androidx.lifecycle.lifecycleScope
 import com.eee312.ppgmonitor.dataset.DatasetInfo
 import com.eee312.ppgmonitor.dataset.DatasetCatalog
 import com.eee312.ppgmonitor.dsp.PpgPipeline
+import com.eee312.ppgmonitor.dsp.SampleRateEstimator
+import com.eee312.ppgmonitor.sensor.HardwareProfile
 import com.eee312.ppgmonitor.dsp.spo2.LiveSpo2Tracker
 import com.eee312.ppgmonitor.dsp.spo2.Spo2Config
 import com.eee312.ppgmonitor.dsp.spo2.Spo2Engine
@@ -64,7 +66,12 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnStartStop: Button
     private lateinit var btnHistory: Button
 
-    private val pipeline = PpgPipeline()
+    // Rebuilt per session at the source's rate, and once more if a live
+    // rig turns out to run off-nominal (see checkLiveRate()).
+    @Volatile private var pipeline = PpgPipeline()
+    private var liveRateEstimator: SampleRateEstimator? = null
+    private var liveSampleCount = 0L
+    @Volatile private var lastSignalWarnMs = 0L
     private var activeSource: SensorSource? = null
     private var running = false
     private var datasets: List<DatasetInfo> = emptyList()
@@ -263,7 +270,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startWithSource(source: SensorSource, sourceType: SourceType, datasetId: String?) {
-        pipeline.reset()
+        pipeline = PpgPipeline(source.sampleRateHz)
+        val isLive = sourceType == SourceType.ESP32_USB || sourceType == SourceType.ESP32_BLE
+        liveRateEstimator = if (isLive) SampleRateEstimator() else null
+        liveSampleCount = 0L
         waveformView.clear()
         tvRefHr.text = ""
         tvRefHr.visibility = View.GONE
@@ -334,7 +344,6 @@ class MainActivity : AppCompatActivity() {
         baseStatus?.let { tvStatus.text = it }
         val sourceTypeAtStop = activeSourceType
         val datasetIdAtStop = activeDatasetId
-        val sampleRateHzAtStop = activeSampleRateHz
         lifecycleScope.launch {
             val result = rec.finish()
             if (result != null) {
@@ -345,7 +354,7 @@ class MainActivity : AppCompatActivity() {
                 CoroutineScope(Dispatchers.Default).launch {
                     ReadingPostProcessor.process(
                         applicationContext, result.readingId, sourceTypeAtStop,
-                        datasetIdAtStop, sampleRateHzAtStop, datasets
+                        datasetIdAtStop, result.sampleRateHz, datasets
                     )
                 }
             }
@@ -379,10 +388,9 @@ class MainActivity : AppCompatActivity() {
         // Parallel consumer (Rule Zero): red/green are read straight off
         // `sample` here, never through PpgPipeline.Output - the pipeline
         // call above and its result are untouched.
-        recorder?.addSample(
-            out.rawPpg, out.cleanedPpg, out.newHrBpm, out.sqi, accMagnitude,
-            sample.ir, sample.red, sample.green
-        )
+        recorder?.addSample(out.rawPpg, out.cleanedPpg, out.newHrBpm, out.sqi, accMagnitude, sample)
+        checkLiveRate(sample)
+        checkLiveSignalLevel(sample)
 
         liveSpo2Tracker?.let { tracker ->
             tracker.addSample(sample.ir, sample.red)?.let { (ir, red) ->
@@ -401,6 +409,44 @@ class MainActivity : AppCompatActivity() {
                 tvSqi.text = "Signal quality: %.0f%%".format(out.sqi * 100)
             }
         }
+    }
+
+    /** Live ESP32 only: measure the real rate from arrival times (or the
+     * frame's seq counter) and, once 10 s of data is in, rebuild the DSP at
+     * the measured rate if it is more than 1 % off nominal - every filter,
+     * window and threshold is built from the rate it is given. Runs on the
+     * source's thread, the same thread that calls pipeline.process(). */
+    private fun checkLiveRate(sample: SensorSample) {
+        val est = liveRateEstimator ?: return
+        val t = sample.sourceTimeSec ?: return
+        est.addLive(sample.seq ?: liveSampleCount, t)
+        liveSampleCount++
+        if (liveSampleCount % HardwareProfile.RATE_MIN_SAMPLES != 0L) return
+        val measured = est.liveRateHz() ?: return
+        if (Math.abs(measured / activeSampleRateHz - 1.0) <= HardwareProfile.RATE_SWITCH_TOLERANCE) return
+        activeSampleRateHz = measured
+        pipeline = PpgPipeline(measured)
+        if (liveSpo2Tracker != null) liveSpo2Tracker = LiveSpo2Tracker(measured)
+        runOnUiThread {
+            tvStatus.text = "Sensor runs at %.2f Hz (not %.0f) - processing restarted at the measured rate"
+                .format(measured, HardwareProfile.NOMINAL_RATE_HZ)
+        }
+    }
+
+    /** Live ESP32 only: tell the user when the finger is off the sensor or a
+     * channel is on the ADC rail (thresholds in HardwareProfile). */
+    private fun checkLiveSignalLevel(sample: SensorSample) {
+        if (liveRateEstimator == null) return
+        val msg = when {
+            sample.ir >= HardwareProfile.SATURATION_COUNTS || (sample.red ?: 0) >= HardwareProfile.SATURATION_COUNTS ->
+                "Signal saturated (ADC rail) - lower the LED current"
+            sample.ir < HardwareProfile.FINGER_PRESENT_IR -> "No finger detected - place your fingertip on the sensor"
+            else -> return
+        }
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastSignalWarnMs < 1000L) return
+        lastSignalWarnMs = now
+        runOnUiThread { tvStatus.text = msg }
     }
 
     override fun onDestroy() {

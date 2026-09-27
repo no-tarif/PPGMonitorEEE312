@@ -2,6 +2,8 @@ package com.eee312.ppgmonitor.history
 
 import android.content.Context
 import android.util.Log
+import com.eee312.ppgmonitor.dsp.SampleRateEstimator
+import com.eee312.ppgmonitor.model.SensorSample
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -40,7 +42,8 @@ class SessionRecorder(
     context: Context,
     private val sourceType: SourceType,
     private val datasetId: String?,
-    private val sampleRateHz: Double
+    private val sampleRateHz: Double,
+    private val sourceLabel: String? = null
 ) {
     companion object {
         private const val TAG = "SessionRecorder"
@@ -48,7 +51,10 @@ class SessionRecorder(
         private const val CHANNEL_CAPACITY = 20_000 // ~800s at 25Hz; comfortably absorbs normal bursts
     }
 
-    data class Result(val readingId: Long, val name: String)
+    /** [sampleRateHz] is the rate the stored tSec values and the post-
+     * processing use: the measured rate for a live ESP32 source, the
+     * file's own rate for Dataset/File. */
+    data class Result(val readingId: Long, val name: String, val sampleRateHz: Double)
 
     private data class RawEvent(
         val rawPpg: Double,
@@ -59,9 +65,11 @@ class SessionRecorder(
         /** Raw sensor channels, read directly from SensorSample alongside
          * (not through) PpgPipeline.Output - a parallel consumer, per
          * Rule Zero: PpgPipeline itself never gains a red/green output. */
-        val irRaw: Int,
+        val irRaw: Int?,
         val redRaw: Int?,
-        val greenRaw: Int?
+        val greenRaw: Int?,
+        val raw: SensorSample?,
+        val flags: Int
     )
 
     private val appContext = context.applicationContext
@@ -84,24 +92,32 @@ class SessionRecorder(
     private var sqiSum = 0.0
     private var sqiCount = 0
 
+    private val isLive = sourceType == SourceType.ESP32_USB || sourceType == SourceType.ESP32_BLE
+    private val rateEstimator = SampleRateEstimator()
+    private var firstSourceTime = Double.NaN
+
     private val consumerJob: Job = recorderScope.launch {
         for (event in channel) {
             handleEvent(event)
         }
     }
 
-    /** Call from any thread, once per DSP-processed sample. */
+    /** Call from any thread, once per DSP-processed sample. [raw] is the
+     * sample exactly as the source delivered it (null for a slot the
+     * dropout filler inserted because nothing arrived) - it is what Export
+     * writes; [rawPpg]/[cleanedPpg] are what the DSP saw/produced. */
     fun addSample(
         rawPpg: Double,
         cleanedPpg: Double,
         newHrBpm: Double?,
         sqi: Double,
         accMagnitude: Double,
-        irRaw: Int,
-        redRaw: Int?,
-        greenRaw: Int?
+        raw: SensorSample?,
+        flags: Int = 0
     ) {
-        val sent = channel.trySend(RawEvent(rawPpg, cleanedPpg, newHrBpm, sqi, accMagnitude, irRaw, redRaw, greenRaw))
+        val sent = channel.trySend(
+            RawEvent(rawPpg, cleanedPpg, newHrBpm, sqi, accMagnitude, raw?.ir, raw?.red, raw?.green, raw, flags)
+        )
         if (sent.isFailure) {
             Log.w(TAG, "Recorder channel full, dropping a sample (sustained rate exceeded write throughput)")
         }
@@ -109,7 +125,14 @@ class SessionRecorder(
 
     private suspend fun handleEvent(e: RawEvent) {
         val tSec = totalSamples / sampleRateHz
+        val slot = totalSamples
         totalSamples++
+
+        val srcT = e.raw?.sourceTimeSec
+        if (srcT != null) {
+            if (firstSourceTime.isNaN()) firstSourceTime = srcT
+            if (isLive) rateEstimator.addLive(e.raw.seq ?: slot, srcT) else rateEstimator.addRecorded(srcT)
+        }
 
         e.newHrBpm?.let { bpm ->
             bpmSum += bpm
@@ -136,7 +159,12 @@ class SessionRecorder(
                 // Same gating as bpm - one sqi value per accepted HR
                 // window, not one per raw sample (see SampleEntity's
                 // header on why this pairing matters for quality checks).
-                sqi = if (e.newHrBpm != null) e.sqi else null
+                sqi = if (e.newHrBpm != null) e.sqi else null,
+                tSrc = srcT?.let { it - firstSourceTime },
+                accX = e.raw?.accX?.toDouble()?.takeIf { it.isFinite() },
+                accY = e.raw?.accY?.toDouble()?.takeIf { it.isFinite() },
+                accZ = e.raw?.accZ?.toDouble()?.takeIf { it.isFinite() },
+                flags = e.flags
             )
         )
 
@@ -163,7 +191,8 @@ class SessionRecorder(
             minBpm = null,
             maxBpm = null,
             meanSqi = null,
-            notes = null
+            notes = null,
+            sourceLabel = sourceLabel
         )
         val id = db.readingDao().insert(entity)
         readingId = id
@@ -192,9 +221,19 @@ class SessionRecorder(
         val finalMinBpm = if (bpmCount > 0) bpmMin else null
         val finalMaxBpm = if (bpmCount > 0) bpmMax else null
         val meanSqi = if (sqiCount > 0) sqiSum / sqiCount else null
-        val durationSec = totalSamples / sampleRateHz
+
+        // Measured rate: live rig -> slope of arrival time vs slot; file ->
+        // median time step. A live reading's time base (tSec, duration,
+        // post-processing) follows the measured rate; a file keeps its own.
+        val measured = if (isLive) rateEstimator.liveRateHz() else rateEstimator.recordedRateHz()
+        val effectiveRate = if (isLive && measured != null) measured else sampleRateHz
+        if (effectiveRate != sampleRateHz) {
+            db.sampleDao().rescaleTime(id, sampleRateHz / effectiveRate)
+        }
+        val durationSec = totalSamples / effectiveRate
 
         db.readingDao().updateSummary(id, durationSec, avgBpm, finalMinBpm, finalMaxBpm, meanSqi)
-        return Result(id, readingName ?: "Reading")
+        db.readingDao().updateRates(id, effectiveRate, measured)
+        return Result(id, readingName ?: "Reading", effectiveRate)
     }
 }

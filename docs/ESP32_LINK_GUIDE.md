@@ -1,5 +1,24 @@
 # ESP32 Live Sensor Link — USB & BLE Guide
 
+> **v3 status (read first).** The rig is now defined by
+> `HARDWARE_SETUP_GUIDE.md` and its firmware `PpgStream.ino` (course
+> folder). That firmware streams over **USB only**; the current frame is in
+> `USB_SERIAL_CONTRACT.md` (7 fields with a `seq` counter). The USB sketch
+> fragments below are superseded by `PpgStream.ino`.
+>
+> **BLE:** no BLE firmware exists for the guide's rig. `BleSensorSource`
+> still implements the 18-byte Nordic-UART packet from Q3 below
+> (parser: `sensor/BlePacketParser.kt`, tested in `FirmwareStreamTest`).
+> Since v3 the packet's `millis()` field is used as the sample time
+> instead of being discarded. Known limit of this contract: acceleration
+> is int16 × 1000, which wraps above ±32.767 m/s² (3.3 g), while the
+> MPU6050 runs at ±8 g — a future BLE sketch should send × 100 (or
+> int32) and the parser must change with it.
+>
+> The sample rate is no longer assumed: both sources are measured and the
+> DSP follows the measured rate (see `USB_SERIAL_CONTRACT.md`).
+
+
 Grounded in a read of this repo as of commit `a86b95e` ("Phase 4: USB
 leftovers + BLE re-wire"). Every claim below cites the file/line it came
 from. Nothing here was modified — app-side changes are given as snippets

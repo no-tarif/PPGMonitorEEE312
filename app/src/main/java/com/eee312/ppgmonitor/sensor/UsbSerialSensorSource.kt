@@ -43,10 +43,10 @@ class UsbSerialSensorSource(
     private val context: Context
 ) : SensorSource {
 
-    // Matches the ir,red,accX,accY,accZ line rate assumed in
-    // USB_SERIAL_CONTRACT.md - update together with PpgPipeline.FS_HZ if
-    // the real firmware turns out to send at a different fixed rate.
-    override val sampleRateHz: Double = 25.0
+    // Nominal rate of PpgStream.ino (HARDWARE_SETUP_GUIDE.md). The app
+    // measures the real rate from arrival times / the frame's seq field
+    // and rebuilds the DSP if the rig runs off-nominal (MainActivity).
+    override val sampleRateHz: Double = HardwareProfile.NOMINAL_RATE_HZ
 
     companion object {
         private const val TAG = "UsbSerialSensorSource"
@@ -76,6 +76,10 @@ class UsbSerialSensorSource(
     // byte chunks, not pre-split into one chunk per line.
     private val lineBuffer = StringBuilder()
 
+    // Arrival time of the first parsed line (elapsedRealtimeNanos); every
+    // sample's sourceTimeSec is measured from it.
+    private var firstArrivalNs = -1L
+
     private val usbPermissionReceiver = object : BroadcastReceiver() {
         override fun onReceive(receiverContext: Context, intent: Intent) {
             if (intent.action != ACTION_USB_PERMISSION) return
@@ -95,6 +99,7 @@ class UsbSerialSensorSource(
         onSampleCb = onSample
         onStatusCb = onStatus
         lineBuffer.setLength(0)
+        firstArrivalNs = -1L
 
         val driver = UsbSerialProber.getDefaultProber().findAllDrivers(usbManager).firstOrNull()
         if (driver == null) {
@@ -170,6 +175,7 @@ class UsbSerialSensorSource(
     }
 
     private fun handleBytes(data: ByteArray) {
+        val arrivalNs = SystemClock.elapsedRealtimeNanos()
         lineBuffer.append(String(data, Charsets.US_ASCII))
 
         while (true) {
@@ -178,7 +184,7 @@ class UsbSerialSensorSource(
             val line = lineBuffer.substring(0, newlineIdx).trim()
             lineBuffer.delete(0, newlineIdx + 1)
             if (line.isNotEmpty()) {
-                parseLine(line)?.let { onSampleCb?.invoke(it) }
+                parseLine(line, arrivalNs)?.let { onSampleCb?.invoke(it) }
             }
         }
 
@@ -188,34 +194,23 @@ class UsbSerialSensorSource(
         }
     }
 
-    /** Parses one newline-delimited ASCII line per USB_SERIAL_CONTRACT.md:
-     * "ir,red,accX,accY,accZ" (5 comma-separated fields, unchanged) or,
-     * new for SpO2 hardware that also has a green LED, "ir,red,accX,accY,
-     * accZ,green" (6 fields, green appended last - same convention as
-     * CsvDatasetSource's optional trailing green column). Returns null
-     * (dropping the line) on any other malformed input - change this
-     * together with USB_SERIAL_CONTRACT.md if the real firmware's line
-     * format differs; nothing else in this class depends on the exact
-     * format. */
-    private fun parseLine(line: String): SensorSample? {
-        val fields = line.split(',')
-        if (fields.size != 5 && fields.size != 6) {
-            Log.w(TAG, "Skipping malformed line (expected 5 or 6 fields, got ${fields.size}): $line")
-            return null
-        }
-        return try {
-            SensorSample(
-                timestampMs = SystemClock.elapsedRealtime(),
-                ir = fields[0].trim().toInt(),
-                red = fields[1].trim().toInt(),
-                accX = fields[2].trim().toFloat(),
-                accY = fields[3].trim().toFloat(),
-                accZ = fields[4].trim().toFloat(),
-                green = if (fields.size == 6) fields[5].trim().toIntOrNull() else null
-            )
-        } catch (e: NumberFormatException) {
-            Log.w(TAG, "Skipping malformed line (parse error): $line", e)
-            null
+    /** One line -> sample, via [SerialLineParser] (5, 6 or 7 fields, see
+     * USB_SERIAL_CONTRACT.md). The firmware's own '#' messages (e.g.
+     * "# INIT FAILED: MPU6050 did not answer") are shown as the status. */
+    private fun parseLine(line: String, arrivalNs: Long): SensorSample? {
+        if (firstArrivalNs < 0) firstArrivalNs = arrivalNs
+        val arrivalSec = (arrivalNs - firstArrivalNs) / 1e9
+        return when (val r = SerialLineParser.parse(line, arrivalNs / 1_000_000L, arrivalSec)) {
+            is SerialLineParser.Result.Sample -> r.sample
+            is SerialLineParser.Result.Comment -> {
+                Log.i(TAG, "Firmware: ${r.text}")
+                onStatusCb?.invoke("ESP32: ${r.text.removePrefix("#").trim()}")
+                null
+            }
+            is SerialLineParser.Result.Malformed -> {
+                Log.w(TAG, "Skipping malformed line (${r.reason}): $line")
+                null
+            }
         }
     }
 

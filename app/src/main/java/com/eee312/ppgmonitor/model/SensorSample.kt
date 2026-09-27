@@ -19,7 +19,9 @@ package com.eee312.ppgmonitor.model
  *                 estimation)
  *   ir, red     - raw ADC counts from the optical sensor (unscaled -
  *                 matches what a MAX30102-family sensor reports)
- *   accX/Y/Z    - accelerometer, any consistent unit (g or m/s^2) - the
+ *   accX/Y/Z    - accelerometer, any consistent unit (g or m/s^2; the
+ *                 ESP32 rig sends m/s^2). NaN = that axis could not be
+ *                 read for this sample (firmware "nan" field) - the
  *                 pipeline only cares about relative motion, not the
  *                 absolute unit, since everything is band-passed and
  *                 normalized before use
@@ -43,5 +45,15 @@ data class SensorSample(
     val accX: Float,
     val accY: Float,
     val accZ: Float,
-    val green: Int? = null
+    val green: Int? = null,
+    /** v3: the sample's time in seconds as the SOURCE saw it - the time
+     * column of a dataset / uploaded file, the ESP32's millis() for BLE,
+     * or the phone's arrival time since the first line for USB. Used for
+     * the measured sample rate and gap detection, and exported as the
+     * raw CSV's `time` column. Null = unknown. */
+    val sourceTimeSec: Double? = null,
+    /** v3: the firmware's record counter (7-field USB frame), so a missing
+     * line is detected exactly rather than from arrival times. Null when
+     * the source has none. */
+    val seq: Long? = null
 )

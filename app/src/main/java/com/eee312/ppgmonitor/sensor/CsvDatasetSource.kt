@@ -89,14 +89,21 @@ class CsvDatasetSource(
 
         onStatus("Playing ${dataset.displayName} at ${speed.label}" + if (loop) " (loop)" else "")
 
+        // Source time keeps increasing across loop passes, so a looped
+        // reading's exported time column stays monotonic.
+        var loopOffsetSec = 0.0
+        var lastT = 0.0
         while (running) {
             var refIdx = 0
+            val passOffset = loopOffsetSec
             context.assets.open("$ASSET_DIR/${dataset.id}.csv").bufferedReader().use { reader ->
                 reader.readLine() // header
                 while (running) {
                     val line = reader.readLine() ?: break // natural EOF
                     val parsed = parseLine(line) ?: continue
-                    val (t, sample) = parsed
+                    val (t, parsedSample) = parsed
+                    val sample = parsedSample.copy(sourceTimeSec = passOffset + t)
+                    lastT = t
 
                     while (refIdx < refSeries.size && refSeries[refIdx].first <= t) {
                         onReferenceBpmListener?.invoke(refSeries[refIdx].second)
@@ -110,6 +117,7 @@ class CsvDatasetSource(
 
             if (!running) return // stopped mid-file by the user - not a "finished" event
             if (!loop) break
+            loopOffsetSec = passOffset + lastT + 1.0 / dataset.sampleRateHz
         }
 
         if (running) {

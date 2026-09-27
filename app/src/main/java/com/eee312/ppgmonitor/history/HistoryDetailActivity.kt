@@ -321,7 +321,7 @@ class HistoryDetailActivity : AppCompatActivity() {
         val rows = listOf(
             "Source" to sourceLabel,
             "Duration" to "%d:%02d".format(totalSec / 60, totalSec % 60),
-            "Sample rate" to "%.2f Hz".format(r.sampleRateHz),
+            "Sample rate" to "%.2f Hz".format(r.measuredRateHz ?: r.sampleRateHz),
             "Avg BPM" to fmt(r.avgBpm),
             "Min BPM" to fmt(r.minBpm),
             "Max BPM" to fmt(r.maxBpm),

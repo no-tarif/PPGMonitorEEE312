@@ -55,3 +55,21 @@ val MIGRATION_1_2 = object : Migration(1, 2) {
         db.execSQL("CREATE INDEX IF NOT EXISTS `index_spo2_windows_readingId` ON `spo2_windows` (`readingId`)")
     }
 }
+
+/**
+ * v2 -> v3: raw-sample export, measured sample rate, dropout flags and
+ * the File source label. ALTER TABLE ADD COLUMN only (nullable, no
+ * default) - every existing reading, sample and SpO2 window survives
+ * unchanged; the new columns are simply null for them.
+ */
+val MIGRATION_2_3 = object : Migration(2, 3) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE samples ADD COLUMN tSrc REAL")
+        db.execSQL("ALTER TABLE samples ADD COLUMN accX REAL")
+        db.execSQL("ALTER TABLE samples ADD COLUMN accY REAL")
+        db.execSQL("ALTER TABLE samples ADD COLUMN accZ REAL")
+        db.execSQL("ALTER TABLE samples ADD COLUMN flags INTEGER")
+        db.execSQL("ALTER TABLE readings ADD COLUMN measuredRateHz REAL")
+        db.execSQL("ALTER TABLE readings ADD COLUMN sourceLabel TEXT")
+    }
+}

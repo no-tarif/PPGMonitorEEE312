@@ -54,5 +54,18 @@ data class SampleEntity(
      * have nothing to read for every future recording - see the Phase 0
      * report, which flagged that only an aggregate meanSqi existed
      * before this migration. Null for every pre-existing (LEGACY) sample. */
-    val sqi: Double? = null
+    val sqi: Double? = null,
+    // --- v3: the raw sample exactly as received, for Export (schema v3).
+    // All null for readings recorded before v3. ---
+    /** Source time in seconds from the first sample of the reading (a
+     * file's time column, BLE device millis, or USB arrival time). */
+    val tSrc: Double? = null,
+    /** Raw accelerometer axes as received (m/s^2 for the ESP32 rig). Null
+     * when the axis was unreadable ("nan" from the firmware). */
+    val accX: Double? = null,
+    val accY: Double? = null,
+    val accZ: Double? = null,
+    /** SampleFlags bitmask (filled / signal lost / inserted / ...); null =
+     * no flags recorded (every pre-v3 sample). */
+    val flags: Int? = null
 )

@@ -29,14 +29,26 @@ import com.eee312.ppgmonitor.model.SensorSample
  */
 class PpgPipeline(
     private val fsHz: Double = FS_HZ,
-    lmsTapsPerChannel: Int = 32,
+    lmsTapsPerChannel: Int = lmsTapsFor(fsHz),
     lmsStepSize: Double = 1e-3
 ) {
     companion object {
-        /** Must match SensorSource.sampleRateHz for whichever source is
-         * active (SimulatedSensorSource / BleSensorSource) - see
-         * BLE_CONTRACT.md if you change the hardware's actual rate. */
+        /** Nominal rate of every bundled dataset and of the ESP32 rig in
+         * HARDWARE_SETUP_GUIDE.md. A source running at another rate gets a
+         * pipeline built for ITS rate (MainActivity passes the source's
+         * rate, and switches to the measured rate for a live rig that
+         * runs off-nominal) - see [lmsTapsFor] / [normalizerAlphaFor]. */
         const val FS_HZ = 25.0
+
+        /** 32 taps = 1.28 s of accelerometer history at 25 Hz; keep the same
+         * time span at other rates. Exactly 32 at 25 Hz. */
+        fun lmsTapsFor(fsHz: Double): Int =
+            if (Math.abs(fsHz - FS_HZ) < 1e-9) 32 else Math.round(32 * fsHz / FS_HZ).toInt().coerceAtLeast(4)
+
+        /** alpha = 0.01 per sample at 25 Hz (a ~4 s time constant); the same
+         * time constant at other rates. Exactly 0.01 at 25 Hz. */
+        fun normalizerAlphaFor(fsHz: Double): Double =
+            if (Math.abs(fsHz - FS_HZ) < 1e-9) 0.01 else 1.0 - Math.pow(0.99, FS_HZ / fsHz)
     }
 
     data class Output(
@@ -57,10 +69,11 @@ class PpgPipeline(
     private val accYFilter = BiquadCascadeFilter(sos)
     private val accZFilter = BiquadCascadeFilter(sos)
 
-    private val ppgNorm = RunningNormalizer()
-    private val accXNorm = RunningNormalizer()
-    private val accYNorm = RunningNormalizer()
-    private val accZNorm = RunningNormalizer()
+    private val normAlpha = normalizerAlphaFor(fsHz)
+    private val ppgNorm = RunningNormalizer(normAlpha)
+    private val accXNorm = RunningNormalizer(normAlpha)
+    private val accYNorm = RunningNormalizer(normAlpha)
+    private val accZNorm = RunningNormalizer(normAlpha)
 
     private val lms = LmsMultichannelFilter(lmsTapsPerChannel, lmsStepSize)
     private val hrEstimator = HeartRateEstimator(fsHz)

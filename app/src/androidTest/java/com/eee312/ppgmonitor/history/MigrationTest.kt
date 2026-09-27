@@ -62,7 +62,7 @@ class MigrationTest {
             InstrumentationRegistry.getInstrumentation().targetContext,
             AppDatabase::class.java,
             TEST_DB
-        ).addMigrations(MIGRATION_1_2).build()
+        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build()
 
         try {
             val reading = kotlinx.coroutines.runBlocking { roomDb.readingDao().getById(1) }
@@ -82,6 +82,59 @@ class MigrationTest {
             // New table is present and usable.
             val windows = kotlinx.coroutines.runBlocking { roomDb.spo2WindowDao().getForReading(1) }
             assertEquals(0, windows.size)
+        } finally {
+            roomDb.close()
+        }
+    }
+
+    /** v2 -> v3 (raw export, measured rate, dropout flags, File label):
+     * ADD COLUMN only. A v2 reading with samples and SpO2 windows must come
+     * through untouched, with every new column null. */
+    @Test
+    fun migrate2To3_preservesReadingsSamplesAndWindows() {
+        var db = helper.createDatabase(TEST_DB, 2)
+        db.execSQL(
+            "INSERT INTO readings (id, name, sourceType, datasetId, startedAtEpochMs, durationSec, " +
+                "sampleRateHz, avgBpm, minBpm, maxBpm, meanSqi, notes, spo2Status, spo2Median, rMedian, " +
+                "qualityVerdict) VALUES (7, 'Reading 7', 'SIMULATED', NULL, 1700000000000, 60.0, 25.0, " +
+                "71.5, 65.0, 80.0, 0.61, NULL, 'OK', 97.0, 0.52, 'GOOD')"
+        )
+        for (i in 0 until 5) {
+            db.execSQL(
+                "INSERT INTO samples (readingId, tSec, rawPpg, cleanedPpg, accMagnitude, bpm, irRaw, redRaw, " +
+                    "greenRaw, sqi) VALUES (7, ${i * 0.04}, ${115000 + i}.0, 0.1, 9.81, NULL, ${115000 + i}, 84000, NULL, NULL)"
+            )
+        }
+        db.execSQL(
+            "INSERT INTO spo2_windows (readingId, tSec, r, spo2, piIr, piRed, valid, rejectReason) " +
+                "VALUES (7, 36.0, 0.52, 97.0, 0.01, 0.0052, 1, 'NONE')"
+        )
+        db.close()
+
+        db = helper.runMigrationsAndValidate(TEST_DB, 3, true, MIGRATION_2_3)
+        db.close()
+
+        val roomDb = androidx.room.Room.databaseBuilder(
+            InstrumentationRegistry.getInstrumentation().targetContext, AppDatabase::class.java, TEST_DB
+        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build()
+        try {
+            val reading = kotlinx.coroutines.runBlocking { roomDb.readingDao().getById(7) }!!
+            assertEquals("Reading 7", reading.name)
+            assertEquals(SourceType.SIMULATED, reading.sourceType)
+            assertEquals(97.0, reading.spo2Median!!, 1e-9)
+            assertEquals(null, reading.measuredRateHz)
+            assertEquals(null, reading.sourceLabel)
+
+            val samples = kotlinx.coroutines.runBlocking { roomDb.sampleDao().getForReading(7) }
+            assertEquals(5, samples.size)
+            assertEquals(115000, samples[0].irRaw)
+            assertEquals(null, samples[0].tSrc)
+            assertEquals(null, samples[0].accX)
+            assertEquals(null, samples[0].flags)
+
+            val windows = kotlinx.coroutines.runBlocking { roomDb.spo2WindowDao().getForReading(7) }
+            assertEquals(1, windows.size)
+            assertEquals(0.52, windows[0].r, 1e-9)
         } finally {
             roomDb.close()
         }

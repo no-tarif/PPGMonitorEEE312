@@ -42,14 +42,14 @@ object FilterCoefficients {
         doubleArrayOf(1.000000000000, -2.000000000000, 1.000000000000, 1.000000000000, -1.957507384697, 0.961565386894)
     )
 
-    /** Looks up the precomputed SOS for a given sample rate (nearest of
-     * the two above), warning loudly (via the returned flag) if the
-     * requested rate isn't actually one of them. */
-    fun bandpassFor(fsHz: Double): Array<DoubleArray> {
-        return if (Math.abs(fsHz - 25.0) <= Math.abs(fsHz - 50.0)) {
-            BANDPASS_0_5_4HZ_AT_25HZ
-        } else {
-            BANDPASS_0_5_4HZ_AT_50HZ
-        }
+    /** The precomputed table when [fsHz] is exactly 25 or 50 Hz (so every
+     * existing result stays bit-for-bit identical), otherwise the same
+     * order-4 0.5-4 Hz design computed for the real rate by
+     * [ButterworthDesign] - the old nearest-of-25/50 snapping would have
+     * put the pass band in the wrong place for, e.g., a 16.67 Hz rig. */
+    fun bandpassFor(fsHz: Double): Array<DoubleArray> = when {
+        Math.abs(fsHz - 25.0) < 1e-9 -> BANDPASS_0_5_4HZ_AT_25HZ
+        Math.abs(fsHz - 50.0) < 1e-9 -> BANDPASS_0_5_4HZ_AT_50HZ
+        else -> ButterworthDesign.bandpassSos(4, 0.5, minOf(4.0, 0.95 * fsHz / 2), fsHz)
     }
 }

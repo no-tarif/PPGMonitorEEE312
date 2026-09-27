@@ -39,19 +39,21 @@ object Spo2FilterCoefficients {
 
     const val FS_50_3HZ: Double = 50.0 / 3.0
 
-    /** Strict lookup (unlike dsp/FilterCoefficients.bandpassFor's
-     * nearest-neighbour tolerance) - SpO2's PI/R numbers are sensitive to
-     * using the exact rate the data was actually sampled/resampled at, so
-     * silently snapping to the "nearest" supported rate would be a
-     * correctness bug here, not a convenience. */
-    fun bandpassFor(fsHz: Double): Array<DoubleArray> = when {
-        Math.abs(fsHz - 25.0) < 1e-6 -> BANDPASS_0_5_4HZ_AT_25HZ
-        Math.abs(fsHz - FS_50_3HZ) < 1e-6 -> BANDPASS_0_5_4HZ_AT_50_3HZ
-        else -> throw IllegalArgumentException(
-            "No precomputed SpO2 band-pass SOS for fs=$fsHz Hz - only 25.0 and " +
-                "${FS_50_3HZ} (50/3) are supported. Generate new coefficients with " +
-                "scipy.signal.butter(4, [0.5, 4.0], btype='bandpass', fs=$fsHz, output='sos') " +
-                "and add them here."
-        )
+    /** Exact-rate lookup: the precomputed tables for 25 Hz and 50/3 Hz
+     * (unchanged, so the spo2_sep16_* golden tables still match), and for
+     * any other rate the same design computed for that exact rate by
+     * [com.eee312.ppgmonitor.dsp.ButterworthDesign] - SpO2's PI/R numbers
+     * need the band in the right place, so a rate is never snapped to a
+     * "nearest" table. [bandHz] is the already-clamped band
+     * (Spo2Config.effectiveBandHz). This used to throw for any other
+     * rate, which would have crashed the post-processing of a rig that
+     * doesn't run at exactly 25 Hz. */
+    fun bandpassFor(fsHz: Double, bandHz: Pair<Double, Double> = 0.5 to minOf(4.0, 0.95 * fsHz / 2)): Array<DoubleArray> {
+        val standardBand = bandHz.first == 0.5 && bandHz.second == 4.0
+        return when {
+            standardBand && Math.abs(fsHz - 25.0) < 1e-6 -> BANDPASS_0_5_4HZ_AT_25HZ
+            standardBand && Math.abs(fsHz - FS_50_3HZ) < 1e-6 -> BANDPASS_0_5_4HZ_AT_50_3HZ
+            else -> com.eee312.ppgmonitor.dsp.ButterworthDesign.bandpassSos(4, bandHz.first, bandHz.second, fsHz)
+        }
     }
 }

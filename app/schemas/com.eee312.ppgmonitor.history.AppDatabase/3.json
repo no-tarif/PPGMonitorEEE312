@@ -1,0 +1,373 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 3,
+    "identityHash": "0670ea599c42098431a0896792fbdfe8",
+    "entities": [
+      {
+        "tableName": "readings",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `sourceType` TEXT NOT NULL, `datasetId` TEXT, `startedAtEpochMs` INTEGER NOT NULL, `durationSec` REAL NOT NULL, `sampleRateHz` REAL NOT NULL, `avgBpm` REAL, `minBpm` REAL, `maxBpm` REAL, `meanSqi` REAL, `notes` TEXT, `spo2Status` TEXT, `spo2Median` REAL, `spo2Min` REAL, `spo2Max` REAL, `spo2AcceptedPct` REAL, `rMedian` REAL, `piIrMedian` REAL, `piRedMedian` REAL, `spo2Curve` TEXT, `spo2CalibrationInfo` TEXT, `qualityVerdict` TEXT, `qualityJson` TEXT, `measuredRateHz` REAL, `sourceLabel` TEXT)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "name",
+            "columnName": "name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sourceType",
+            "columnName": "sourceType",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "datasetId",
+            "columnName": "datasetId",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "startedAtEpochMs",
+            "columnName": "startedAtEpochMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "durationSec",
+            "columnName": "durationSec",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sampleRateHz",
+            "columnName": "sampleRateHz",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "avgBpm",
+            "columnName": "avgBpm",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "minBpm",
+            "columnName": "minBpm",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "maxBpm",
+            "columnName": "maxBpm",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "meanSqi",
+            "columnName": "meanSqi",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "notes",
+            "columnName": "notes",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "spo2Status",
+            "columnName": "spo2Status",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "spo2Median",
+            "columnName": "spo2Median",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "spo2Min",
+            "columnName": "spo2Min",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "spo2Max",
+            "columnName": "spo2Max",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "spo2AcceptedPct",
+            "columnName": "spo2AcceptedPct",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "rMedian",
+            "columnName": "rMedian",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "piIrMedian",
+            "columnName": "piIrMedian",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "piRedMedian",
+            "columnName": "piRedMedian",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "spo2Curve",
+            "columnName": "spo2Curve",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "spo2CalibrationInfo",
+            "columnName": "spo2CalibrationInfo",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "qualityVerdict",
+            "columnName": "qualityVerdict",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "qualityJson",
+            "columnName": "qualityJson",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "measuredRateHz",
+            "columnName": "measuredRateHz",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "sourceLabel",
+            "columnName": "sourceLabel",
+            "affinity": "TEXT"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        }
+      },
+      {
+        "tableName": "samples",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `readingId` INTEGER NOT NULL, `tSec` REAL NOT NULL, `rawPpg` REAL NOT NULL, `cleanedPpg` REAL NOT NULL, `accMagnitude` REAL NOT NULL, `bpm` REAL, `irRaw` INTEGER, `redRaw` INTEGER, `greenRaw` INTEGER, `sqi` REAL, `tSrc` REAL, `accX` REAL, `accY` REAL, `accZ` REAL, `flags` INTEGER, FOREIGN KEY(`readingId`) REFERENCES `readings`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "readingId",
+            "columnName": "readingId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "tSec",
+            "columnName": "tSec",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "rawPpg",
+            "columnName": "rawPpg",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "cleanedPpg",
+            "columnName": "cleanedPpg",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "accMagnitude",
+            "columnName": "accMagnitude",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "bpm",
+            "columnName": "bpm",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "irRaw",
+            "columnName": "irRaw",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "redRaw",
+            "columnName": "redRaw",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "greenRaw",
+            "columnName": "greenRaw",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "sqi",
+            "columnName": "sqi",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "tSrc",
+            "columnName": "tSrc",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "accX",
+            "columnName": "accX",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "accY",
+            "columnName": "accY",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "accZ",
+            "columnName": "accZ",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "flags",
+            "columnName": "flags",
+            "affinity": "INTEGER"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_samples_readingId",
+            "unique": false,
+            "columnNames": [
+              "readingId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_samples_readingId` ON `${TABLE_NAME}` (`readingId`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "readings",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "readingId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "spo2_windows",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `readingId` INTEGER NOT NULL, `tSec` REAL NOT NULL, `r` REAL NOT NULL, `spo2` REAL NOT NULL, `piIr` REAL NOT NULL, `piRed` REAL NOT NULL, `valid` INTEGER NOT NULL, `rejectReason` TEXT NOT NULL, FOREIGN KEY(`readingId`) REFERENCES `readings`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "readingId",
+            "columnName": "readingId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "tSec",
+            "columnName": "tSec",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "r",
+            "columnName": "r",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "spo2",
+            "columnName": "spo2",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "piIr",
+            "columnName": "piIr",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "piRed",
+            "columnName": "piRed",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "valid",
+            "columnName": "valid",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "rejectReason",
+            "columnName": "rejectReason",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_spo2_windows_readingId",
+            "unique": false,
+            "columnNames": [
+              "readingId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_spo2_windows_readingId` ON `${TABLE_NAME}` (`readingId`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "readings",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "readingId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '0670ea599c42098431a0896792fbdfe8')"
+    ]
+  }
+}
