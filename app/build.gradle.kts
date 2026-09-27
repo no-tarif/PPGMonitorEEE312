@@ -62,6 +62,9 @@ dependencies {
     // ReadingPostProcessor.qualityReportToJson() and catch bugs like the
     // NaN-in-JSONObject.put() crash this project hit on a real device.
     testImplementation(libs.orgJson)
+    // Test-only: a real XmlPullParser for the .xlsx reader's JVM tests (the
+    // android.jar stub throws). On the phone the platform parser is used.
+    testImplementation(libs.kxml2)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.room.testing)

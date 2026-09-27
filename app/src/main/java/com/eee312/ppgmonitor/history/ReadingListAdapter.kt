@@ -83,6 +83,7 @@ class ReadingListAdapter(
         } ?: "")
         SourceType.ESP32_BLE -> "ESP32 (BLE)"
         SourceType.ESP32_USB -> "ESP32 (USB)"
+        SourceType.FILE -> reading.sourceLabel ?: "File"
     }
 
     private fun formatDuration(sec: Double): String {

@@ -21,6 +21,19 @@ import com.eee312.ppgmonitor.dataset.DatasetCatalog
 import com.eee312.ppgmonitor.dsp.PpgPipeline
 import com.eee312.ppgmonitor.dsp.SampleRateEstimator
 import com.eee312.ppgmonitor.sensor.HardwareProfile
+import com.eee312.ppgmonitor.sensor.PlaybackInput
+import com.eee312.ppgmonitor.sensor.table.ColumnMapping
+import com.eee312.ppgmonitor.sensor.table.FilePlan
+import com.eee312.ppgmonitor.sensor.table.PlanResult
+import com.eee312.ppgmonitor.sensor.table.SignalFileAnalyzer
+import com.eee312.ppgmonitor.sensor.table.SignalFileSource
+import com.eee312.ppgmonitor.sensor.table.TableFormatException
+import android.app.AlertDialog
+import android.net.Uri
+import android.widget.EditText
+import android.widget.LinearLayout
+import android.widget.ScrollView
+import kotlinx.coroutines.withContext
 import com.eee312.ppgmonitor.dsp.spo2.LiveSpo2Tracker
 import com.eee312.ppgmonitor.dsp.spo2.Spo2Config
 import com.eee312.ppgmonitor.dsp.spo2.Spo2Engine
@@ -95,6 +108,7 @@ class MainActivity : AppCompatActivity() {
     // SessionRecorder itself doesn't need to know about SpO2/quality.
     private var activeSourceType: SourceType = SourceType.DATASET
     private var activeDatasetId: String? = null
+    private var activeFilePlan: FilePlan? = null
     private var activeSampleRateHz: Double = PpgPipeline.FS_HZ
 
     // Caps how often we actually touch views, independent of the active
@@ -121,6 +135,111 @@ class MainActivity : AppCompatActivity() {
         } else {
             tvStatus.text = "Bluetooth permission denied - cannot use ESP32 (BLE) source"
         }
+    }
+
+    // --- File (CSV/Excel) source ------------------------------------------
+    private val pickFileLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) prepareFile(uri)
+    }
+
+    /** Opens and inspects the picked file off the main thread, then either
+     * starts playback or asks for a column mapping / sample rate. */
+    private fun prepareFile(uri: Uri) {
+        tvStatus.text = "Reading file..."
+        lifecycleScope.launch {
+            try {
+                val (src, prefix) = withContext(Dispatchers.IO) {
+                    val s = SignalFileSource.open(applicationContext, uri)
+                    s.openTable().use { t -> s to (t.header to SignalFileAnalyzer.readPrefix(t)) }
+                }
+                if (prefix.second.isEmpty()) {
+                    tvStatus.text = "\"${src.displayName}\" has no data rows."
+                    return@launch
+                }
+                resolvePlan(src, prefix.first, prefix.second, null, null)
+            } catch (e: TableFormatException) {
+                tvStatus.text = e.message
+            } catch (e: Exception) {
+                tvStatus.text = "Could not read the file: ${e.message}"
+            }
+        }
+    }
+
+    private fun resolvePlan(
+        src: SignalFileSource,
+        header: List<String>,
+        prefix: List<List<String>>,
+        mapping: ColumnMapping?,
+        rate: Double?
+    ) {
+        when (val r = SignalFileAnalyzer.plan(header, prefix, mapping, rate)) {
+            is PlanResult.Ready -> startFile(src, r.plan)
+            is PlanResult.NeedMapping -> showMappingDialog(r.header, r.suggestion) { m ->
+                resolvePlan(src, header, prefix, m, rate)
+            }
+            is PlanResult.NeedRate -> showRateDialog { hz -> resolvePlan(src, header, prefix, r.mapping, hz) }
+        }
+    }
+
+    private fun startFile(src: SignalFileSource, plan: FilePlan) {
+        val input = PlaybackInput(src.displayName, plan, { src.openTable() })
+        startWithSource(
+            CsvDatasetSource(input, selectedSpeed(), loop = false),
+            SourceType.FILE, null, "File: ${src.displayName}", plan
+        )
+        if (plan.notes.isNotEmpty()) {
+            tvStatus.text = "Playing ${src.displayName} · " + plan.notes.joinToString(" · ")
+        }
+    }
+
+    /** Asked only when the columns can't be recognised from their names. */
+    private fun showMappingDialog(header: List<String>, guess: ColumnMapping, onDone: (ColumnMapping) -> Unit) {
+        val options = listOf("(none)") + header
+        val roles = listOf(
+            "Time" to guess.time, "PPG / IR (required)" to guess.ir.takeIf { it >= 0 }, "Red" to guess.red,
+            "Green" to guess.green, "Acc X" to guess.accX, "Acc Y" to guess.accY, "Acc Z" to guess.accZ
+        )
+        val container = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(48, 16, 48, 0) }
+        val spinners = roles.map { (label, idx) ->
+            container.addView(TextView(this).apply { text = label; textSize = 12f })
+            Spinner(this).apply {
+                adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, options)
+                setSelection(if (idx == null) 0 else idx + 1)
+                container.addView(this)
+            }
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Which column is which?")
+            .setView(ScrollView(this).apply { addView(container) })
+            .setPositiveButton("Play") { _, _ ->
+                fun sel(i: Int) = spinners[i].selectedItemPosition.let { if (it == 0) null else it - 1 }
+                val ir = sel(1)
+                if (ir == null) {
+                    tvStatus.text = "Choose the PPG / IR column to play the file"
+                    return@setPositiveButton
+                }
+                onDone(ColumnMapping(sel(0), ir, sel(2), sel(3), sel(4), sel(5), sel(6)))
+            }
+            .setNegativeButton("Cancel") { _, _ -> tvStatus.text = "Idle" }
+            .show()
+    }
+
+    /** Asked only when the file has no usable time column. */
+    private fun showRateDialog(onDone: (Double) -> Unit) {
+        val input = EditText(this).apply {
+            setText(HardwareProfile.NOMINAL_RATE_HZ.toInt().toString())
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Sample rate (Hz)")
+            .setMessage("The file has no time column. At what rate was it recorded?")
+            .setView(input)
+            .setPositiveButton("Play") { _, _ ->
+                val hz = input.text.toString().replace(',', '.').toDoubleOrNull()
+                if (hz == null || hz <= 0.0) tvStatus.text = "Enter a sample rate in Hz" else onDone(hz)
+            }
+            .setNegativeButton("Cancel") { _, _ -> tvStatus.text = "Idle" }
+            .show()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -158,9 +277,14 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /** Dataset: dataset picker + speed + loop. File: speed only (a file is
+     * always played exactly once). */
     private fun updateDatasetPanelVisibility() {
-        datasetOptionsPanel.visibility =
-            if (rgSource.checkedRadioButtonId == R.id.rbDataset) View.VISIBLE else View.GONE
+        val id = rgSource.checkedRadioButtonId
+        datasetOptionsPanel.visibility = if (id == R.id.rbDataset || id == R.id.rbFile) View.VISIBLE else View.GONE
+        val datasetOnly = if (id == R.id.rbDataset) View.VISIBLE else View.GONE
+        spDataset.visibility = datasetOnly
+        cbLoop.visibility = datasetOnly
     }
 
     private fun onStartClicked() {
@@ -179,6 +303,7 @@ class MainActivity : AppCompatActivity() {
             }
             R.id.rbUsb -> startWithSource(UsbSerialSensorSource(applicationContext), SourceType.ESP32_USB, null)
             R.id.rbBle -> onBleStartRequested()
+            R.id.rbFile -> pickFileLauncher.launch(FILE_MIME_TYPES)
         }
     }
 
@@ -212,7 +337,7 @@ class MainActivity : AppCompatActivity() {
      * only needs a yes/no + message, not the full Spo2Status enum a
      * saved reading uses). Never synthesises SpO2 for a source that
      * doesn't have a real second wavelength. */
-    private fun setUpLiveSpo2Tile(sourceType: SourceType, datasetId: String?, sampleRateHz: Double) {
+    private fun setUpLiveSpo2Tile(sourceType: SourceType, datasetId: String?, sampleRateHz: Double, filePlan: FilePlan?) {
         tvSpo2Live.text = "SpO2 —"
         val ineligibleReason = when (sourceType) {
             SourceType.SIMULATED -> "not computed for this source"
@@ -226,6 +351,11 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             SourceType.ESP32_USB, SourceType.ESP32_BLE -> null
+            SourceType.FILE -> when {
+                filePlan == null || !filePlan.hasRed -> "N/A (no red channel)"
+                !filePlan.spo2Eligible -> "N/A (channels not identified as red / IR)"
+                else -> null
+            }
         }
         if (ineligibleReason != null) {
             liveSpo2Tracker = null
@@ -269,7 +399,13 @@ class MainActivity : AppCompatActivity() {
         else -> PlaybackSpeed.X1
     }
 
-    private fun startWithSource(source: SensorSource, sourceType: SourceType, datasetId: String?) {
+    private fun startWithSource(
+        source: SensorSource,
+        sourceType: SourceType,
+        datasetId: String?,
+        sourceLabel: String? = null,
+        filePlan: FilePlan? = null
+    ) {
         pipeline = PpgPipeline(source.sampleRateHz)
         val isLive = sourceType == SourceType.ESP32_USB || sourceType == SourceType.ESP32_BLE
         liveRateEstimator = if (isLive) SampleRateEstimator() else null
@@ -282,9 +418,10 @@ class MainActivity : AppCompatActivity() {
         activeSource = source
         activeSourceType = sourceType
         activeDatasetId = datasetId
+        activeFilePlan = filePlan
         activeSampleRateHz = source.sampleRateHz
-        recorder = SessionRecorder(applicationContext, sourceType, datasetId, source.sampleRateHz)
-        setUpLiveSpo2Tile(sourceType, datasetId, source.sampleRateHz)
+        recorder = SessionRecorder(applicationContext, sourceType, datasetId, source.sampleRateHz, sourceLabel)
+        setUpLiveSpo2Tile(sourceType, datasetId, source.sampleRateHz, filePlan)
         running = true
         btnStartStop.text = "Stop"
         setControlsEnabled(false)
@@ -344,6 +481,7 @@ class MainActivity : AppCompatActivity() {
         baseStatus?.let { tvStatus.text = it }
         val sourceTypeAtStop = activeSourceType
         val datasetIdAtStop = activeDatasetId
+        val fileSpo2AtStop = activeFilePlan?.spo2Eligible ?: false
         lifecycleScope.launch {
             val result = rec.finish()
             if (result != null) {
@@ -354,7 +492,7 @@ class MainActivity : AppCompatActivity() {
                 CoroutineScope(Dispatchers.Default).launch {
                     ReadingPostProcessor.process(
                         applicationContext, result.readingId, sourceTypeAtStop,
-                        datasetIdAtStop, result.sampleRateHz, datasets
+                        datasetIdAtStop, result.sampleRateHz, datasets, fileSpo2AtStop
                     )
                 }
             }
@@ -457,5 +595,16 @@ class MainActivity : AppCompatActivity() {
         // it isn't tied to lifecycleScope, so this can outlive the
         // activity, but there's no UI left to report back to.
         recorder?.let { rec -> CoroutineScope(Dispatchers.IO).launch { rec.finish() } }
+    }
+
+    companion object {
+        /** SAF filter for File: CSV variants and Excel, plus "any type" as a fallback
+         * because some file managers label CSVs as octet-stream. */
+        private val FILE_MIME_TYPES = arrayOf(
+            "text/csv", "text/comma-separated-values", "text/plain", "application/csv",
+            "application/vnd.ms-excel",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "*/*"
+        )
     }
 }

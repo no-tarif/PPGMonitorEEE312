@@ -302,6 +302,7 @@ class HistoryDetailActivity : AppCompatActivity() {
             } ?: "")
             SourceType.ESP32_BLE -> "ESP32 (BLE)"
             SourceType.ESP32_USB -> "ESP32 (USB)"
+            SourceType.FILE -> r.sourceLabel ?: "File"
         }
         tvSubtitle.text = "$sourceLabel · ${dateFormat.format(r.startedAtEpochMs)}"
 

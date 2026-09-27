@@ -5,6 +5,11 @@ import android.os.SystemClock
 import android.util.Log
 import com.eee312.ppgmonitor.dataset.DatasetInfo
 import com.eee312.ppgmonitor.model.SensorSample
+import com.eee312.ppgmonitor.sensor.table.ColumnDetector
+import com.eee312.ppgmonitor.sensor.table.CsvTableReader
+import com.eee312.ppgmonitor.sensor.table.FilePlan
+import com.eee312.ppgmonitor.sensor.table.PlaybackRowStream
+import com.eee312.ppgmonitor.sensor.table.TableReader
 
 /** How fast to replay a dataset relative to its real recorded rate.
  * FAST has no inter-sample delay at all - useful for quickly scrubbing
@@ -17,29 +22,78 @@ enum class PlaybackSpeed(val multiplier: Double, val label: String) {
 }
 
 /**
- * Replays a bundled dataset CSV (assets/datasets/<id>.csv, written by
- * tools/prepare_datasets.py) as a live [SensorSource], sample by sample,
- * paced to the dataset's own sample rate (scaled by [speed]) rather than
- * dumping the whole file into the pipeline at once - from PpgPipeline's
- * point of view this looks exactly like a live sensor.
+ * Something that can be replayed as a sensor stream: a bundled dataset
+ * asset or a CSV/Excel file the user picked. [openTable] must return a
+ * fresh reader positioned at the first data row each time (looping reopens
+ * it); [plan] says which columns are what and at what rate.
+ */
+class PlaybackInput(
+    val displayName: String,
+    val plan: FilePlan,
+    val openTable: () -> TableReader,
+    /** Optional (time, bpm) ground truth, e.g. a dataset's ECG R-R series. */
+    val referenceHr: () -> List<Pair<Double, Double>> = { emptyList() }
+) {
+    companion object {
+        private const val ASSET_DIR = "datasets"
+
+        /** A bundled dataset (assets/datasets/<id>.csv, written by
+         * tools/prepare_datasets.py: time,ir,red,accX,accY,accZ[,green]). */
+        fun forDataset(context: Context, dataset: DatasetInfo): PlaybackInput {
+            val open = { CsvTableReader(context.assets.open("$ASSET_DIR/${dataset.id}.csv").bufferedReader()) }
+            val header = open().use { it.header }
+            val mapping = ColumnDetector.detect(header).mapping
+                ?: error("Dataset ${dataset.id} has no ir column")
+            val plan = FilePlan(header, mapping, dataset.sampleRateHz, emptyList(), dataset.sampleRateHz)
+            val ref = {
+                if (!dataset.hasReferenceHrSeries) emptyList() else try {
+                    context.assets.open("$ASSET_DIR/${dataset.id}_ref_hr.csv").bufferedReader().useLines { lines ->
+                        lines.drop(1).mapNotNull { line ->
+                            val f = line.split(',')
+                            if (f.size != 2) return@mapNotNull null
+                            val t = f[0].trim().toDoubleOrNull() ?: return@mapNotNull null
+                            val bpm = f[1].trim().toDoubleOrNull() ?: return@mapNotNull null
+                            t to bpm
+                        }.toList()
+                    }
+                } catch (e: Exception) {
+                    Log.w("CsvDatasetSource", "No reference HR series for ${dataset.id}", e)
+                    emptyList()
+                }
+            }
+            return PlaybackInput(dataset.displayName, plan, open, ref)
+        }
+    }
+}
+
+/**
+ * Replays a [PlaybackInput] (bundled dataset or uploaded CSV/Excel file) as
+ * a live [SensorSource], sample by sample, paced to the input's own sample
+ * rate (scaled by [speed]) rather than dumping the whole file into the
+ * pipeline at once - from PpgPipeline's point of view this looks exactly
+ * like a live sensor.
  *
- * If the dataset has a reference-HR series (assets/datasets/<id>_ref_hr.csv),
- * it's loaded up front (a few hundred rows, trivial) and the current
- * reference BPM is reported via [setOnReferenceBpmListener] as playback
- * passes each timestamp, so the UI can show it next to the live estimate.
+ * Rows are streamed (PlaybackRowStream over a TableReader); a row whose PPG
+ * cell is blank/NaN is not emitted, which leaves a gap in the source time
+ * that the dropout filler then handles like a missing sensor sample.
+ *
+ * If the input has a reference-HR series, the current reference BPM is
+ * reported via [setOnReferenceBpmListener] as playback passes each time.
  */
 class CsvDatasetSource(
-    private val context: Context,
-    private val dataset: DatasetInfo,
+    private val input: PlaybackInput,
     private val speed: PlaybackSpeed,
     private val loop: Boolean
 ) : SensorSource {
 
-    override val sampleRateHz: Double = dataset.sampleRateHz
+    /** Convenience for the bundled datasets. */
+    constructor(context: Context, dataset: DatasetInfo, speed: PlaybackSpeed, loop: Boolean) :
+        this(PlaybackInput.forDataset(context, dataset), speed, loop)
+
+    override val sampleRateHz: Double = input.plan.playbackRateHz
 
     companion object {
         private const val TAG = "CsvDatasetSource"
-        private const val ASSET_DIR = "datasets"
     }
 
     @Volatile private var running = false
@@ -63,9 +117,12 @@ class CsvDatasetSource(
             try {
                 playLoop(onSample, onStatus)
             } catch (e: Exception) {
-                Log.e(TAG, "Dataset playback error", e)
-                onStatus("Dataset playback error: ${e.message}")
+                Log.e(TAG, "Playback error", e)
+                onStatus("Playback error: ${e.message}")
+                val wasRunning = running
                 running = false
+                // End the session cleanly (whatever was played is saved).
+                if (wasRunning) onFinishedListener?.invoke()
             }
         }.apply {
             isDaemon = true
@@ -80,14 +137,14 @@ class CsvDatasetSource(
     }
 
     private fun playLoop(onSample: (SensorSample) -> Unit, onStatus: (String) -> Unit) {
-        val refSeries = if (dataset.hasReferenceHrSeries) loadReferenceHr() else emptyList()
+        val refSeries = input.referenceHr()
         val periodMs = if (speed == PlaybackSpeed.FAST) {
             0L
         } else {
-            (1000.0 / dataset.sampleRateHz / speed.multiplier).toLong().coerceAtLeast(1)
+            (1000.0 / sampleRateHz / speed.multiplier).toLong().coerceAtLeast(1)
         }
 
-        onStatus("Playing ${dataset.displayName} at ${speed.label}" + if (loop) " (loop)" else "")
+        onStatus("Playing ${input.displayName} at ${speed.label}" + if (loop) " (loop)" else "")
 
         // Source time keeps increasing across loop passes, so a looped
         // reading's exported time column stays monotonic.
@@ -96,33 +153,42 @@ class CsvDatasetSource(
         while (running) {
             var refIdx = 0
             val passOffset = loopOffsetSec
-            context.assets.open("$ASSET_DIR/${dataset.id}.csv").bufferedReader().use { reader ->
-                reader.readLine() // header
-                while (running) {
-                    val line = reader.readLine() ?: break // natural EOF
-                    val parsed = parseLine(line) ?: continue
-                    val (t, parsedSample) = parsed
-                    val sample = parsedSample.copy(sourceTimeSec = passOffset + t)
+            PlaybackRowStream(input.openTable(), input.plan).use { rows ->
+                while (running && rows.hasNext()) {
+                    val row = rows.next()
+                    val t = row.t
                     lastT = t
+                    val ir = PlaybackRowStream.counts(row.ir) ?: continue // missing PPG: leave a gap
 
                     while (refIdx < refSeries.size && refSeries[refIdx].first <= t) {
                         onReferenceBpmListener?.invoke(refSeries[refIdx].second)
                         refIdx++
                     }
 
-                    onSample(sample)
+                    onSample(
+                        SensorSample(
+                            timestampMs = SystemClock.elapsedRealtime(),
+                            ir = ir,
+                            red = PlaybackRowStream.counts(row.red),
+                            accX = row.accX,
+                            accY = row.accY,
+                            accZ = row.accZ,
+                            green = PlaybackRowStream.counts(row.green),
+                            sourceTimeSec = passOffset + t
+                        )
+                    )
                     sleepFor(periodMs)
                 }
             }
 
             if (!running) return // stopped mid-file by the user - not a "finished" event
             if (!loop) break
-            loopOffsetSec = passOffset + lastT + 1.0 / dataset.sampleRateHz
+            loopOffsetSec = passOffset + lastT + 1.0 / sampleRateHz
         }
 
         if (running) {
             running = false
-            onStatus("Finished: ${dataset.displayName}")
+            onStatus("Finished: ${input.displayName}")
             onFinishedListener?.invoke()
         }
     }
@@ -133,56 +199,6 @@ class CsvDatasetSource(
             Thread.sleep(periodMs)
         } catch (e: InterruptedException) {
             Thread.currentThread().interrupt() // loop re-checks `running` and exits cleanly
-        }
-    }
-
-    /** Parses one "time,ir,red,accX,accY,accZ[,green]" line, with two
-     * SpO2-era extensions that don't change how the original 8 bundled
-     * datasets (always exactly 6 fields, ir/red always numeric) are read:
-     *   - an optional 7th trailing "green" field (hw_sep16.csv)
-     *   - an empty red field (single-wavelength captures, e.g.
-     *     "Hardware - Running 2") - parsed as null, not a 0 sentinel;
-     *     DatasetInfo.hasRed tells callers the same thing at the manifest
-     *     level, this is the per-sample equivalent
-     * Returns null (dropping the line) on any other malformed input, same
-     * tolerant approach as UsbSerialSensorSource.parseLine(). */
-    private fun parseLine(line: String): Pair<Double, SensorSample>? {
-        val f = line.split(',')
-        if (f.size != 6 && f.size != 7) return null
-        return try {
-            val t = f[0].trim().toDouble()
-            val redField = f[2].trim()
-            val sample = SensorSample(
-                timestampMs = SystemClock.elapsedRealtime(),
-                ir = f[1].trim().toInt(),
-                red = if (redField.isEmpty()) null else redField.toInt(),
-                accX = f[3].trim().toFloat(),
-                accY = f[4].trim().toFloat(),
-                accZ = f[5].trim().toFloat(),
-                green = if (f.size == 7) f[6].trim().toIntOrNull() else null
-            )
-            t to sample
-        } catch (e: NumberFormatException) {
-            Log.w(TAG, "Skipping malformed dataset line: $line", e)
-            null
-        }
-    }
-
-    private fun loadReferenceHr(): List<Pair<Double, Double>> {
-        val path = "$ASSET_DIR/${dataset.id}_ref_hr.csv"
-        return try {
-            context.assets.open(path).bufferedReader().useLines { lines ->
-                lines.drop(1).mapNotNull { line ->
-                    val f = line.split(',')
-                    if (f.size != 2) return@mapNotNull null
-                    val t = f[0].trim().toDoubleOrNull() ?: return@mapNotNull null
-                    val bpm = f[1].trim().toDoubleOrNull() ?: return@mapNotNull null
-                    t to bpm
-                }.toList()
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "No reference HR series for ${dataset.id}", e)
-            emptyList()
         }
     }
 }

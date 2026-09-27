@@ -38,13 +38,16 @@ object ReadingPostProcessor {
         sourceType: SourceType,
         datasetId: String?,
         sampleRateHz: Double,
-        datasets: List<DatasetInfo>
+        datasets: List<DatasetInfo>,
+        /** FILE only: true when the file has a column named red (a real
+         * second wavelength), false for SNR-picked channels (PhysioNet). */
+        fileSpo2Eligible: Boolean = false
     ) = withContext(Dispatchers.Default) {
         val db = AppDatabase.get(context)
         db.readingDao().updateSpo2Status(readingId, Spo2Status.PENDING)
 
         val samples = db.sampleDao().getForReading(readingId)
-        val terminalStatus = terminalEligibility(sourceType, datasetId, datasets, samples)
+        val terminalStatus = terminalEligibility(sourceType, datasetId, datasets, samples, fileSpo2Eligible)
 
         if (terminalStatus != null) {
             db.readingDao().updateSpo2Status(readingId, terminalStatus)
@@ -86,7 +89,8 @@ object ReadingPostProcessor {
         sourceType: SourceType,
         datasetId: String?,
         datasets: List<DatasetInfo>,
-        samples: List<SampleEntity>
+        samples: List<SampleEntity>,
+        fileSpo2Eligible: Boolean
     ): Spo2Status? = when (sourceType) {
         SourceType.SIMULATED -> Spo2Status.NOT_ELIGIBLE
         SourceType.DATASET -> {
@@ -97,6 +101,11 @@ object ReadingPostProcessor {
                 !info.hasRed -> Spo2Status.SINGLE_WAVELENGTH
                 else -> Spo2Status.NOT_ELIGIBLE
             }
+        }
+        SourceType.FILE -> when {
+            samples.none { it.redRaw != null } -> Spo2Status.SINGLE_WAVELENGTH
+            !fileSpo2Eligible -> Spo2Status.NOT_ELIGIBLE
+            else -> null
         }
         SourceType.ESP32_USB, SourceType.ESP32_BLE ->
             if (samples.isNotEmpty() && samples.all { it.redRaw == null }) Spo2Status.SINGLE_WAVELENGTH else null

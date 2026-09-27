@@ -69,6 +69,32 @@ Explicitly out of scope for now:
   `tools/prepare_datasets.py`) to populate the bundled dataset picker.
 - `ui/WaveformView` — the live scrolling PPG waveform chart.
 
+## File (CSV / Excel) source
+
+Choose **File (CSV/Excel)** and tap Start: the system file picker opens.
+The file is played once, in real time at its own sample rate (speed
+buttons work as for Dataset), through the same pipeline as every other
+source, and saved to History as "File: <name>". Stop ends it early.
+
+- **CSV**: `,` `;` or tab separated (detected), quoted fields, blank
+  lines skipped, header row detected, decimal commas accepted.
+- **.xlsx**: first worksheet, read without extra libraries. Old **.xls**
+  is refused with "Please save the file as .xlsx or .csv".
+- **Columns** are recognised by name (`time`/`time_s`/`tSec`/`t_ms`,
+  `ir`/`ppg`/`rawPpg`, `red`, `green`, `accX`/`a_x`…). PhysioNet
+  originals (`pleth_1..6`) get the two best channels by in-band SNR, like
+  `tools/prepare_datasets.py` (SpO2 is then not computed). If the PPG
+  column can't be recognised, a small dialog asks which column is which.
+- **Sample rate** from the time column (median step; seconds, ms or
+  date-time). No time column → the app asks (default 25 Hz). Files above
+  60 Hz are FIR-decimated to ~25 Hz exactly as `prepare_datasets.py`
+  does (500 Hz PhysioNet → ×5 then ×4; this reproduces the bundled
+  assets sample for sample).
+- No accelerometer columns → LMS motion cancellation is bypassed (noted
+  on screen). No red column → SpO2 "N/A (no red channel)". Blank / NaN
+  PPG cells are treated as missing samples.
+- Files are streamed row by row — a 40 MB CSV is never held in memory.
+
 ## Export format (raw samples)
 
 **Export** (History → a reading → Export, or long-press in the list) saves
