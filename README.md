@@ -69,6 +69,27 @@ Explicitly out of scope for now:
   `tools/prepare_datasets.py`) to populate the bundled dataset picker.
 - `ui/WaveformView` — the live scrolling PPG waveform chart.
 
+## Dropouts and BPM (v3)
+
+Every source goes through `dsp/ProcessingChain`:
+`DropoutFiller -> PpgPipeline (unchanged) -> BpmGuard`.
+
+- **DropoutFiller**: a missing sample (seq jump / time gap), IR below 50 % of
+  its 2 s median (or, on the live rig, below 50 000 counts or at the ADC
+  rail) and the 0.2 s after recovery are "bad". Gaps up to 1 s are filled
+  with the last 1 s average per channel; longer gaps are "signal lost"
+  (screen: "Signal lost - check sensor"), left out of BPM/SpO2/stats, and
+  the DSP restarts when the signal returns. LMS adaptation is frozen on
+  filled samples. Export still writes the raw received values.
+- **BpmGuard** (all numbers in `BpmGuardConfig`): 40–210 BPM; estimates from
+  windows > 25 % filled are ignored; a jump > 12 BPM from the trend (median
+  of the last 3) is held and resolved by the next estimate (80, 100, 82 →
+  80, 81, 82); the shown/saved value moves ≤ 3 BPM/s; after 3 estimates in a
+  row that disagree with the trend it re-acquires. History applies the same
+  rules to the whole stored series (also for old readings).
+- Evidence (MAE/RMSE vs ECG, injected detachments): `docs/phase6/`.
+- SpO2 method, gates and calibration: `docs/SPO2_METHOD.md`.
+
 ## File (CSV / Excel) source
 
 Choose **File (CSV/Excel)** and tap Start: the system file picker opens.
