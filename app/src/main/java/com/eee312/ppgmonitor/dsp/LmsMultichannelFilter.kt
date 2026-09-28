@@ -35,8 +35,11 @@ class LmsMultichannelFilter(
 
     /** Filters one sample. [references] must have exactly [numChannels]
      * entries (accX, accY, accZ). Returns the cleaned (artifact-reduced)
-     * PPG sample. */
-    fun process(desired: Double, references: DoubleArray): Double {
+     * PPG sample. [adapt] = false freezes the weights for this sample (v3:
+     * used on samples the dropout filler replaced, or whose accelerometer
+     * reading was unusable, so the filter doesn't learn from made-up data).
+     * With the default true this is exactly the original algorithm. */
+    fun process(desired: Double, references: DoubleArray, adapt: Boolean = true): Double {
         require(references.size == numChannels)
 
         // Shift the delay line down by one tap (oldest tap's channels drop
@@ -57,8 +60,10 @@ class LmsMultichannelFilter(
 
         val e = desired - y
 
-        for (i in 0 until totalTaps) {
-            weights[i] += stepSize * e * delayLine[i]
+        if (adapt) {
+            for (i in 0 until totalTaps) {
+                weights[i] += stepSize * e * delayLine[i]
+            }
         }
 
         // Instability guard, mirroring the MATLAB fix: if the filter

@@ -88,7 +88,9 @@ class PpgPipeline(
      * enough live data to compare the two. */
     private val ppgChannelSelector: (SensorSample) -> Double = { it.ir.toDouble() }
 
-    fun process(sample: SensorSample): Output {
+    /** [adapt] = false freezes LMS adaptation for this sample (see
+     * LmsMultichannelFilter.process); true (default) = unchanged behaviour. */
+    fun process(sample: SensorSample, adapt: Boolean = true): Output {
         val rawPpg = ppgChannelSelector(sample)
 
         val ppgBp = ppgFilter.process(rawPpg)
@@ -101,7 +103,7 @@ class PpgPipeline(
         val accYN = accYNorm.process(accYBp)
         val accZN = accZNorm.process(accZBp)
 
-        val cleaned = lms.process(ppgN, doubleArrayOf(accXN, accYN, accZN))
+        val cleaned = lms.process(ppgN, doubleArrayOf(accXN, accYN, accZN), adapt)
 
         val newHr = hrEstimator.addSample(cleaned)
         if (newHr != null) latestHrBpm = newHr

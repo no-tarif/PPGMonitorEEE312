@@ -27,6 +27,10 @@ class LiveSpo2Tracker(private val fsHz: Double, private val cfg: Spo2Config = Sp
 
     private val irBuf = ArrayDeque<Double>(windowSamples)
     private val redBuf = ArrayDeque<Double>(windowSamples)
+    // v3: dropout flags of the samples in the window - a window holding
+    // any filled / lost / saturated sample is never used for SpO2.
+    private val badBuf = ArrayDeque<Boolean>(windowSamples)
+    private var badInWindow = 0
     private var totalSamples = 0L
     private var samplesSinceUpdate = 0
 
@@ -37,15 +41,19 @@ class LiveSpo2Tracker(private val fsHz: Double, private val cfg: Spo2Config = Sp
      * wavelength" instead (this class doesn't decide that itself, since
      * a single null shouldn't cause a live class to permanently mark a
      * whole session that way - see MainActivity's per-source check). */
-    fun addSample(ir: Int, red: Int?): Pair<DoubleArray, DoubleArray>? {
+    fun addSample(ir: Int, red: Int?, flags: Int = 0): Pair<DoubleArray, DoubleArray>? {
         totalSamples++
         if (red == null) return null
 
+        val bad = flags and com.eee312.ppgmonitor.dsp.SampleFlags.SPO2_EXCLUDE != 0
         irBuf.addLast(ir.toDouble())
         redBuf.addLast(red.toDouble())
+        badBuf.addLast(bad)
+        if (bad) badInWindow++
         while (irBuf.size > windowSamples) {
             irBuf.removeFirst()
             redBuf.removeFirst()
+            if (badBuf.removeFirst()) badInWindow--
         }
 
         samplesSinceUpdate++
@@ -54,13 +62,22 @@ class LiveSpo2Tracker(private val fsHz: Double, private val cfg: Spo2Config = Sp
         if (irBuf.size < windowSamples) return null
         if (samplesSinceUpdate < stepSamples) return null
         samplesSinceUpdate = 0
+        if (badInWindow > 0) { lastWindowExcluded = true; return null }
+        lastWindowExcluded = false
 
         return irBuf.toDoubleArray() to redBuf.toDoubleArray()
     }
 
+    /** True when the last due window was skipped because it held filled /
+     * lost samples (the caller shows "--" instead of a stale value). */
+    @Volatile var lastWindowExcluded = false
+        private set
+
     fun reset() {
         irBuf.clear()
         redBuf.clear()
+        badBuf.clear()
+        badInWindow = 0
         totalSamples = 0
         samplesSinceUpdate = 0
     }

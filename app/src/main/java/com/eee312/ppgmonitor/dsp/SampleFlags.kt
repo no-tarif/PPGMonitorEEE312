@@ -21,5 +21,8 @@ object SampleFlags {
     /** Within the settling time after the signal came back. */
     const val SETTLING = 64
 
+    /** Any of these in an SpO2 window drops the window. */
+    const val SPO2_EXCLUDE = FILLED or LOST or INSERTED or SATURATED or LOW_SIGNAL or SETTLING
+
     fun has(flags: Int?, bit: Int): Boolean = flags != null && (flags and bit) != 0
 }

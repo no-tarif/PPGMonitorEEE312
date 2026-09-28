@@ -16,6 +16,8 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.eee312.ppgmonitor.R
 import com.eee312.ppgmonitor.dataset.DatasetCatalog
+import com.eee312.ppgmonitor.dsp.BpmSeries
+import com.eee312.ppgmonitor.dsp.SampleFlags
 import com.eee312.ppgmonitor.dsp.spo2.Spo2Config
 import com.eee312.ppgmonitor.dsp.spo2.Spo2SinglePointCalibration
 import com.eee312.ppgmonitor.ui.ChannelColors
@@ -66,6 +68,7 @@ class HistoryDetailActivity : AppCompatActivity() {
     private var reading: ReadingEntity? = null
     private var overlayIr: FloatArray? = null
     private var overlayRed: FloatArray? = null
+    private var guardedBpm: BpmSeries.Result? = null
 
     /** Export = the raw samples as received, one CSV in the canonical
      * capture layout (see RawCsvExporter), streamed off the main thread. */
@@ -131,11 +134,11 @@ class HistoryDetailActivity : AppCompatActivity() {
             }
             reading = r
             bindHeader(r)
-            loadWaveform(r)
-
-            val bpmSeries = withContext(Dispatchers.IO) { db.sampleDao().getBpmSeries(readingId) }
+            val bpm = loadWaveformAndBpm(r)
+            guardedBpm = bpm
+            bindSummary(r, sourceLabelOf(r))
             val windows = withContext(Dispatchers.IO) { db.spo2WindowDao().getForReading(readingId) }
-            bindBpmChart(bpmSeries)
+            bindBpmChart(bpm)
             bindSpo2Chart(windows)
 
             if (HistoryDisplayConfig.SHOW_ADVANCED_METRICS) {
@@ -165,27 +168,43 @@ class HistoryDetailActivity : AppCompatActivity() {
         }
     }
 
-    /** Reads cleanedPpg for the whole reading in id-keyed chunks off the
-     * main thread and hands the full array to the zoomable chart. */
-    private suspend fun loadWaveform(r: ReadingEntity) {
-        val values = withContext(Dispatchers.IO) {
+    /** Reads cleanedPpg, the raw HR estimates and the dropout flags for the
+     * whole reading in id-keyed chunks off the main thread; hands the PPG to
+     * the zoomable chart (LOST stretches as gaps - the same cleaned signal
+     * the live screen showed) and returns the guarded BPM series. */
+    private suspend fun loadWaveformAndBpm(r: ReadingEntity): BpmSeries.Result {
+        val (values, guarded) = withContext(Dispatchers.IO) {
             val n = db.sampleDao().countForReading(r.id)
             val out = FloatArray(n)
+            val flags = IntArray(n)
+            val estIdx = ArrayList<Int>()
+            val estBpm = ArrayList<Double>()
             var filled = 0
             var afterId = 0L
             while (filled < n) {
                 val chunk = db.sampleDao().getWaveformChunk(r.id, afterId, WAVEFORM_CHUNK)
                 if (chunk.isEmpty()) break
-                for (p in chunk) { if (filled < n) out[filled++] = p.cleanedPpg.toFloat() }
+                for (p in chunk) {
+                    if (filled >= n) break
+                    val f = p.flags ?: 0
+                    flags[filled] = f
+                    out[filled] = if (f and SampleFlags.LOST != 0) Float.NaN else p.cleanedPpg.toFloat()
+                    p.bpm?.let { estIdx += filled; estBpm += it }
+                    filled++
+                }
                 afterId = chunk.last().id
             }
-            if (filled < n) out.copyOf(filled) else out
+            val g = BpmSeries.guarded(filled, flags.copyOf(filled), estIdx.toIntArray(), estBpm.toDoubleArray(), r.sampleRateHz)
+            (if (filled < n) out.copyOf(filled) else out) to g
         }
         waveformZoom.emptyText = "No samples stored for this reading"
         waveformZoom.setData(values, r.sampleRateHz)
+        return guarded
     }
 
-    private fun bindBpmChart(points: List<BpmPoint>) {
+    /** Guarded BPM (BpmGuard rules applied to the whole stored series). */
+    private fun bindBpmChart(g: BpmSeries.Result) {
+        val points = g.records
         if (points.isEmpty()) return
         chartBpmSqi.setData(
             listOf(
@@ -295,7 +314,15 @@ class HistoryDetailActivity : AppCompatActivity() {
     private fun bindHeader(r: ReadingEntity) {
         tvName.text = r.name
         val dateFormat = SimpleDateFormat("MMM d, yyyy HH:mm", Locale.getDefault())
-        val sourceLabel = when (r.sourceType) {
+        val sourceLabel = sourceLabelOf(r)
+        tvSubtitle.text = "$sourceLabel · ${dateFormat.format(r.startedAtEpochMs)}"
+
+        bindSummary(r, sourceLabel)
+        tvSpo2.text = spo2SummaryText(r)
+        tvQuality.text = "Recording quality: ${r.qualityVerdict ?: "computing..."}"
+    }
+
+    private fun sourceLabelOf(r: ReadingEntity): String = when (r.sourceType) {
             SourceType.SIMULATED -> "Simulated"
             SourceType.DATASET -> "Dataset" + (r.datasetId?.let { id ->
                 DatasetCatalog.load(applicationContext).find { it.id == id }?.displayName?.let { " — $it" }
@@ -304,12 +331,6 @@ class HistoryDetailActivity : AppCompatActivity() {
             SourceType.ESP32_USB -> "ESP32 (USB)"
             SourceType.FILE -> r.sourceLabel ?: "File"
         }
-        tvSubtitle.text = "$sourceLabel · ${dateFormat.format(r.startedAtEpochMs)}"
-
-        bindSummary(r, sourceLabel)
-        tvSpo2.text = spo2SummaryText(r)
-        tvQuality.text = "Recording quality: ${r.qualityVerdict ?: "computing..."}"
-    }
 
     /** Exactly the eight summary fields - nothing else. */
     private fun bindSummary(r: ReadingEntity, sourceLabel: String) {
@@ -318,9 +339,12 @@ class HistoryDetailActivity : AppCompatActivity() {
             "Source" to sourceLabel,
             "Duration" to "%d:%02d".format(totalSec / 60, totalSec % 60),
             "Sample rate" to "%.2f Hz".format(r.measuredRateHz ?: r.sampleRateHz),
-            "Avg BPM" to fmt(r.avgBpm),
-            "Min BPM" to fmt(r.minBpm),
-            "Max BPM" to fmt(r.maxBpm),
+            // Guarded series (spikes removed, signal-lost stretches left out),
+            // computed from the stored estimates - so older readings get the
+            // same treatment. Falls back to the stored stats while loading.
+            "Avg BPM" to fmt(guardedBpm?.avg ?: r.avgBpm),
+            "Min BPM" to fmt(guardedBpm?.min ?: r.minBpm),
+            "Max BPM" to fmt(guardedBpm?.max ?: r.maxBpm),
             "SpO2" to spo2ShortText(r),
             "Signal quality" to (r.meanSqi?.let { "%.0f%%".format(it * 100) } ?: "--")
         )

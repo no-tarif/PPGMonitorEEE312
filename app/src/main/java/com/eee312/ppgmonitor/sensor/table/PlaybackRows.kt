@@ -64,16 +64,46 @@ class PlaybackRowStream(private val reader: TableReader, private val plan: FileP
         return PlaybackRow(t, ir, red, green, floatCell(cell(r, m.accX)), floatCell(cell(r, m.accY)), floatCell(cell(r, m.accZ)))
     }
 
+    // One-row lookahead to repair isolated corrupted timestamps (same rule
+    // as tools/prepare_datasets.py's repair_sep16_timestamps: a single row
+    // whose time is far off from BOTH neighbours while the neighbours agree
+    // with each other gets the midpoint). hw_class1.csv has one such row
+    // (a +387 s jump and straight back) that would otherwise look like a
+    // 387 s gap.
+    private var held: PlaybackRow? = null
+    private var prevT = Double.NaN
+
+    private fun repaired(cur: PlaybackRow, next: PlaybackRow?): PlaybackRow {
+        val p = prevT
+        prevT = cur.t
+        if (m.time == null || next == null || p.isNaN()) return cur
+        val step = 1.0 / plan.fileRateHz
+        val far = 10 * step
+        return if (Math.abs(cur.t - p) > far && Math.abs(next.t - cur.t) > far && Math.abs(next.t - p) < 3 * step) {
+            val fixed = cur.copy(t = (p + next.t) / 2)
+            prevT = fixed.t
+            fixed
+        } else cur
+    }
+
+    private fun emit(row: PlaybackRow) {
+        if (stages.isEmpty()) queue.addLast(row) else decimate(row)
+    }
+
     private fun fill() {
         while (queue.isEmpty() && !eof) {
             val r = reader.nextRow()
             if (r == null) {
                 eof = true
+                held?.let { emit(repaired(it, null)) }
+                held = null
                 if (stages.isNotEmpty()) flushDecimators()
                 break
             }
             val row = parse(r)
-            if (stages.isEmpty()) queue.addLast(row) else decimate(row)
+            val h = held
+            held = row
+            if (h != null) emit(repaired(h, row))
         }
     }
 

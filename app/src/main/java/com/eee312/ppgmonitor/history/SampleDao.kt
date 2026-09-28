@@ -7,7 +7,7 @@ import androidx.room.Query
 /** Narrow projection for the History PPG graph - three columns instead of
  * a whole [SampleEntity], read in id-keyed chunks so a 1 M-sample reading
  * never has to exist as a list of entities. */
-data class WaveformPoint(val id: Long, val tSec: Double, val cleanedPpg: Double)
+data class WaveformPoint(val id: Long, val tSec: Double, val cleanedPpg: Double, val bpm: Double?, val flags: Int?)
 
 /** One stored HR estimate (non-null bpm) for the BPM-over-time graph. */
 data class BpmPoint(val tSec: Double, val bpm: Double)
@@ -23,7 +23,7 @@ interface SampleDao {
     /** Samples are inserted in time order, so id order == tSec order and
      * `id > afterId` gives cheap keyset paging (no OFFSET rescans). */
     @Query(
-        "SELECT id, tSec, cleanedPpg FROM samples WHERE readingId = :readingId AND id > :afterId " +
+        "SELECT id, tSec, cleanedPpg, bpm, flags FROM samples WHERE readingId = :readingId AND id > :afterId " +
             "ORDER BY id ASC LIMIT :limit"
     )
     suspend fun getWaveformChunk(readingId: Long, afterId: Long, limit: Int): List<WaveformPoint>
@@ -41,6 +41,13 @@ interface SampleDao {
 
     @Query("SELECT EXISTS(SELECT 1 FROM samples WHERE readingId = :readingId AND greenRaw IS NOT NULL)")
     suspend fun hasGreen(readingId: Long): Boolean
+
+    /** FILLED -> LOST for the slots of one gap (bit 1 cleared, bit 2 set). */
+    @Query(
+        "UPDATE samples SET flags = ((COALESCE(flags, 0) | 2) & ~1) " +
+            "WHERE readingId = :readingId AND tSec >= :fromT AND tSec <= :toT"
+    )
+    suspend fun markLost(readingId: Long, fromT: Double, toT: Double)
 
     @Query("SELECT COUNT(*) FROM samples WHERE readingId = :readingId")
     suspend fun countForReading(readingId: Long): Int

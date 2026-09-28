@@ -20,6 +20,8 @@ import com.eee312.ppgmonitor.dataset.DatasetInfo
 import com.eee312.ppgmonitor.dataset.DatasetCatalog
 import com.eee312.ppgmonitor.dsp.PpgPipeline
 import com.eee312.ppgmonitor.dsp.SampleRateEstimator
+import com.eee312.ppgmonitor.dsp.BpmGuard
+import com.eee312.ppgmonitor.dsp.ProcessingChain
 import com.eee312.ppgmonitor.sensor.HardwareProfile
 import com.eee312.ppgmonitor.sensor.PlaybackInput
 import com.eee312.ppgmonitor.sensor.table.ColumnMapping
@@ -79,10 +81,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnStartStop: Button
     private lateinit var btnHistory: Button
 
-    // Rebuilt per session at the source's rate, and once more if a live
-    // rig turns out to run off-nominal (see checkLiveRate()).
-    @Volatile private var pipeline = PpgPipeline()
     private var liveRateEstimator: SampleRateEstimator? = null
+    // v3: DropoutFiller -> PpgPipeline -> BpmGuard (see ProcessingChain).
+    @Volatile private var chain: ProcessingChain? = null
     private var liveSampleCount = 0L
     @Volatile private var lastSignalWarnMs = 0L
     private var activeSource: SensorSource? = null
@@ -406,10 +407,11 @@ class MainActivity : AppCompatActivity() {
         sourceLabel: String? = null,
         filePlan: FilePlan? = null
     ) {
-        pipeline = PpgPipeline(source.sampleRateHz)
         val isLive = sourceType == SourceType.ESP32_USB || sourceType == SourceType.ESP32_BLE
         liveRateEstimator = if (isLive) SampleRateEstimator() else null
         liveSampleCount = 0L
+        chain = newChain(source.sampleRateHz, sourceType, BpmGuard(), 0L)
+        tvHr.text = "-- BPM"
         waveformView.clear()
         tvRefHr.text = ""
         tvRefHr.visibility = View.GONE
@@ -516,36 +518,64 @@ class MainActivity : AppCompatActivity() {
      * for the simulator, a worker thread for dataset playback, a
      * SerialInputOutputManager read thread for USB) - always hop back to
      * the main thread before touching views. */
+    /** Called from the sensor source's own thread (a worker thread for
+     * dataset/file playback, a SerialInputOutputManager read thread for
+     * USB, a Binder thread for BLE) - always hop back to the main thread
+     * before touching views.
+     *
+     * v3 chain: source -> DropoutFiller -> PpgPipeline -> BpmGuard. The
+     * filler may emit extra slots (samples that never arrived). */
     private fun handleSample(sample: SensorSample) {
-        val out = pipeline.process(sample)
-
-        val accMagnitude = sqrt(
-            sample.accX.toDouble() * sample.accX + sample.accY.toDouble() * sample.accY +
-                sample.accZ.toDouble() * sample.accZ
-        )
-        // Parallel consumer (Rule Zero): red/green are read straight off
-        // `sample` here, never through PpgPipeline.Output - the pipeline
-        // call above and its result are untouched.
-        recorder?.addSample(out.rawPpg, out.cleanedPpg, out.newHrBpm, out.sqi, accMagnitude, sample)
         checkLiveRate(sample)
         checkLiveSignalLevel(sample)
+        val c = chain ?: return
+        for (slot in c.process(sample)) handleSlot(slot)
+    }
+
+    private fun handleSlot(slot: ProcessingChain.Slot) {
+        val o = slot.out
+        val d = o.dsp
+        val accMagnitude = sqrt(d.accX.toDouble() * d.accX + d.accY.toDouble() * d.accY + d.accZ.toDouble() * d.accZ)
+            .takeIf { it.isFinite() } ?: 0.0
+        val p = slot.pipe
+        if (p == null) {
+            if (o.lostStarted) {
+                liveSpo2Tracker?.reset()
+                runOnUiThread {
+                    tvStatus.text = "Signal lost - check sensor"
+                    tvSpo2Live.text = "SpO2 --"
+                }
+            }
+            // LOST: not processed, no BPM/SpO2. The row keeps the time base
+            // (its cleanedPpg is meaningless - the LOST flag marks it and
+            // History draws a gap).
+            recorder?.addSample(d.ir.toDouble(), 0.0, null, Double.NaN, accMagnitude, o.raw, o.flags)
+            updateDisplay(slot.tSec, null, Double.NaN)
+            return
+        }
+        if (o.recovered) runOnUiThread { tvStatus.text = "Signal back - restarting heart-rate estimate" }
+
+        // Parallel consumer (Rule Zero): red/green are read straight off
+        // the sample here, never through PpgPipeline.Output.
+        recorder?.addSample(p.rawPpg, p.cleanedPpg, p.newHrBpm, p.sqi, accMagnitude, o.raw, o.flags)
 
         liveSpo2Tracker?.let { tracker ->
-            tracker.addSample(sample.ir, sample.red)?.let { (ir, red) ->
+            tracker.addSample(d.ir, d.red, o.flags)?.let { (ir, red) ->
                 updateLiveSpo2Tile(ir, red, activeSampleRateHz, tracker.liveConfig)
             }
         }
+        updateDisplay(slot.tSec, p.cleanedPpg.toFloat(), p.sqi)
+    }
 
+    private fun updateDisplay(t: Double, cleaned: Float?, sqi: Double) {
         val now = SystemClock.elapsedRealtime()
         if (now - lastWaveformUpdateMs < minUiUpdateIntervalMs) return
         lastWaveformUpdateMs = now
-
+        val shown = chain?.guard?.displayAt(t)
         runOnUiThread {
-            waveformView.addSample(out.cleanedPpg.toFloat())
-            out.latestHrBpm?.let { tvHr.text = "%.0f BPM".format(it) }
-            if (!out.sqi.isNaN()) {
-                tvSqi.text = "Signal quality: %.0f%%".format(out.sqi * 100)
-            }
+            cleaned?.let { waveformView.addSample(it) }
+            tvHr.text = shown?.let { "%.0f BPM".format(it) } ?: "-- BPM"
+            if (!sqi.isNaN()) tvSqi.text = "Signal quality: %.0f%%".format(sqi * 100)
         }
     }
 
@@ -562,8 +592,12 @@ class MainActivity : AppCompatActivity() {
         if (liveSampleCount % HardwareProfile.RATE_MIN_SAMPLES != 0L) return
         val measured = est.liveRateHz() ?: return
         if (Math.abs(measured / activeSampleRateHz - 1.0) <= HardwareProfile.RATE_SWITCH_TOLERANCE) return
+        // Rebuild the whole chain at the measured rate, keeping the time
+        // base continuous and the BPM guard's state.
+        val old = chain
+        val startSlot = Math.round((old?.slotCount ?: 0L) * measured / activeSampleRateHz)
         activeSampleRateHz = measured
-        pipeline = PpgPipeline(measured)
+        chain = newChain(measured, activeSourceType, old?.guard ?: BpmGuard(), startSlot)
         if (liveSpo2Tracker != null) liveSpo2Tracker = LiveSpo2Tracker(measured)
         runOnUiThread {
             tvStatus.text = "Sensor runs at %.2f Hz (not %.0f) - processing restarted at the measured rate"
@@ -585,6 +619,15 @@ class MainActivity : AppCompatActivity() {
         if (now - lastSignalWarnMs < 1000L) return
         lastSignalWarnMs = now
         runOnUiThread { tvStatus.text = msg }
+    }
+
+    /** USB frames without seq only have bursty arrival times, which can't
+     * tell a missing line from a late one; everything else can. The rig's
+     * absolute levels (finger-present, ADC rail) apply to the live ESP32. */
+    private fun newChain(rateHz: Double, sourceType: SourceType, guard: BpmGuard, startSlot: Long): ProcessingChain {
+        val isLive = sourceType == SourceType.ESP32_USB || sourceType == SourceType.ESP32_BLE
+        val filler = ProcessingChain.fillerFor(rateHz, liveUsb = sourceType == SourceType.ESP32_USB, liveHardware = isLive)
+        return ProcessingChain(rateHz, filler, guard, startSlot)
     }
 
     override fun onDestroy() {

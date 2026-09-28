@@ -2,6 +2,8 @@ package com.eee312.ppgmonitor.history
 
 import android.content.Context
 import android.util.Log
+import com.eee312.ppgmonitor.dsp.BpmSeries
+import com.eee312.ppgmonitor.dsp.DropoutFiller
 import com.eee312.ppgmonitor.dsp.SampleRateEstimator
 import com.eee312.ppgmonitor.model.SensorSample
 import kotlinx.coroutines.CoroutineScope
@@ -93,6 +95,13 @@ class SessionRecorder(
     private var sqiCount = 0
 
     private val isLive = sourceType == SourceType.ESP32_USB || sourceType == SourceType.ESP32_BLE
+
+    // v3: per-slot flags + raw estimates, for the offline BPM guard and
+    // the "gap became signal lost" relabel at finish().
+    private var flagLog = IntArray(4096)
+    private var estIdx = IntArray(256)
+    private var estBpm = DoubleArray(256)
+    private var estCount = 0
     private val rateEstimator = SampleRateEstimator()
     private var firstSourceTime = Double.NaN
 
@@ -134,6 +143,12 @@ class SessionRecorder(
             if (isLive) rateEstimator.addLive(e.raw.seq ?: slot, srcT) else rateEstimator.addRecorded(srcT)
         }
 
+        if (slot >= flagLog.size) flagLog = flagLog.copyOf(flagLog.size * 2)
+        flagLog[slot.toInt()] = e.flags
+        e.newHrBpm?.let { bpm ->
+            if (estCount == estIdx.size) { estIdx = estIdx.copyOf(estCount * 2); estBpm = estBpm.copyOf(estCount * 2) }
+            estIdx[estCount] = slot.toInt(); estBpm[estCount] = bpm; estCount++
+        }
         e.newHrBpm?.let { bpm ->
             bpmSum += bpm
             bpmCount++
@@ -217,9 +232,18 @@ class SessionRecorder(
         val id = readingId ?: return null
         flush(id)
 
-        val avgBpm = if (bpmCount > 0) bpmSum / bpmCount else null
-        val finalMinBpm = if (bpmCount > 0) bpmMin else null
-        val finalMaxBpm = if (bpmCount > 0) bpmMax else null
+        val n = totalSamples.toInt()
+        val flags = flagLog.copyOf(n)
+        // A gap that ran past the fill limit was partly filled live before
+        // its length was known: the whole gap is "signal lost".
+        for (r in DropoutFiller.relabelLostRuns(flags)) {
+            db.sampleDao().markLost(id, (r.first - 0.5) / sampleRateHz, (r.last + 0.5) / sampleRateHz)
+        }
+        // Saved stats = the guarded series (same rules History uses).
+        val guarded = BpmSeries.guarded(n, flags, estIdx.copyOf(estCount), estBpm.copyOf(estCount), sampleRateHz)
+        val avgBpm = guarded.avg ?: if (bpmCount > 0) bpmSum / bpmCount else null
+        val finalMinBpm = guarded.min ?: if (bpmCount > 0) bpmMin else null
+        val finalMaxBpm = guarded.max ?: if (bpmCount > 0) bpmMax else null
         val meanSqi = if (sqiCount > 0) sqiSum / sqiCount else null
 
         // Measured rate: live rig -> slope of arrival time vs slot; file ->
