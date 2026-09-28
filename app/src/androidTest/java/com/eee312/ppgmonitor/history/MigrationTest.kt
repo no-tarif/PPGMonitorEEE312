@@ -62,7 +62,7 @@ class MigrationTest {
             InstrumentationRegistry.getInstrumentation().targetContext,
             AppDatabase::class.java,
             TEST_DB
-        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build()
+        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).build()
 
         try {
             val reading = kotlinx.coroutines.runBlocking { roomDb.readingDao().getById(1) }
@@ -116,7 +116,7 @@ class MigrationTest {
 
         val roomDb = androidx.room.Room.databaseBuilder(
             InstrumentationRegistry.getInstrumentation().targetContext, AppDatabase::class.java, TEST_DB
-        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build()
+        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).build()
         try {
             val reading = kotlinx.coroutines.runBlocking { roomDb.readingDao().getById(7) }!!
             assertEquals("Reading 7", reading.name)
@@ -134,7 +134,47 @@ class MigrationTest {
 
             val windows = kotlinx.coroutines.runBlocking { roomDb.spo2WindowDao().getForReading(7) }
             assertEquals(1, windows.size)
-            assertEquals(0.52, windows[0].r, 1e-9)
+            assertEquals(0.52, windows[0].r!!, 1e-9)
+        } finally {
+            roomDb.close()
+        }
+    }
+
+    /** v3 -> v4: spo2_windows rebuilt with nullable r/spo2/piIr/piRed; every
+     * row copied unchanged, and a window with no value can now be stored. */
+    @Test
+    fun migrate3To4_rebuildsSpo2WindowsWithoutLoss() {
+        var db = helper.createDatabase(TEST_DB, 3)
+        db.execSQL(
+            "INSERT INTO readings (id, name, sourceType, datasetId, startedAtEpochMs, durationSec, " +
+                "sampleRateHz, avgBpm, minBpm, maxBpm, meanSqi, notes) VALUES " +
+                "(9, 'Reading 9', 'DATASET', 'hw_sep16', 1700000000000, 206.8, 25.0, 80.0, 65.0, 107.0, 0.58, NULL)"
+        )
+        db.execSQL(
+            "INSERT INTO spo2_windows (id, readingId, tSec, r, spo2, piIr, piRed, valid, rejectReason) " +
+                "VALUES (5, 9, 35.98, 0.3272, 101.82, 0.00166, 0.00054, 0, 'ABOVE_100')"
+        )
+        db.close()
+
+        db = helper.runMigrationsAndValidate(TEST_DB, 4, true, MIGRATION_3_4)
+        db.close()
+
+        val roomDb = androidx.room.Room.databaseBuilder(
+            InstrumentationRegistry.getInstrumentation().targetContext, AppDatabase::class.java, TEST_DB
+        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).build()
+        try {
+            val w = kotlinx.coroutines.runBlocking { roomDb.spo2WindowDao().getForReading(9) }
+            assertEquals(1, w.size)
+            assertEquals(5L, w[0].id)
+            assertEquals(101.82, w[0].spo2!!, 1e-9)
+            assertEquals(com.eee312.ppgmonitor.dsp.spo2.Spo2RejectReason.ABOVE_100, w[0].rejectReason)
+            kotlinx.coroutines.runBlocking {
+                roomDb.spo2WindowDao().insertAll(
+                    listOf(Spo2WindowEntity(readingId = 9, tSec = 37.98, r = null, spo2 = null, piIr = null, piRed = null,
+                        valid = false, rejectReason = com.eee312.ppgmonitor.dsp.spo2.Spo2RejectReason.LOW_PERFUSION))
+                )
+            }
+            assertEquals(2, kotlinx.coroutines.runBlocking { roomDb.spo2WindowDao().getForReading(9) }.size)
         } finally {
             roomDb.close()
         }

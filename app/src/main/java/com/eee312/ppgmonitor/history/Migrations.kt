@@ -73,3 +73,37 @@ val MIGRATION_2_3 = object : Migration(2, 3) {
         db.execSQL("ALTER TABLE readings ADD COLUMN sourceLabel TEXT")
     }
 }
+
+/**
+ * v3 -> v4: spo2_windows.r / spo2 / piIr / piRed become nullable. SQLite
+ * has no ALTER COLUMN, so the table is rebuilt the standard way inside the
+ * migration's transaction: create the new table, copy every row, drop the
+ * old one, rename, recreate the index. No row is lost or changed.
+ */
+val MIGRATION_3_4 = object : Migration(3, 4) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS `spo2_windows_new` (
+                `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                `readingId` INTEGER NOT NULL,
+                `tSec` REAL NOT NULL,
+                `r` REAL,
+                `spo2` REAL,
+                `piIr` REAL,
+                `piRed` REAL,
+                `valid` INTEGER NOT NULL,
+                `rejectReason` TEXT NOT NULL,
+                FOREIGN KEY(`readingId`) REFERENCES `readings`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE
+            )
+            """.trimIndent()
+        )
+        db.execSQL(
+            "INSERT INTO `spo2_windows_new` (`id`, `readingId`, `tSec`, `r`, `spo2`, `piIr`, `piRed`, `valid`, `rejectReason`) " +
+                "SELECT `id`, `readingId`, `tSec`, `r`, `spo2`, `piIr`, `piRed`, `valid`, `rejectReason` FROM `spo2_windows`"
+        )
+        db.execSQL("DROP TABLE `spo2_windows`")
+        db.execSQL("ALTER TABLE `spo2_windows_new` RENAME TO `spo2_windows`")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_spo2_windows_readingId` ON `spo2_windows` (`readingId`)")
+    }
+}

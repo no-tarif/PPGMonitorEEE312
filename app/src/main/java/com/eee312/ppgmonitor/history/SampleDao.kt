@@ -12,6 +12,9 @@ data class WaveformPoint(val id: Long, val tSec: Double, val cleanedPpg: Double,
 /** One stored HR estimate (non-null bpm) for the BPM-over-time graph. */
 data class BpmPoint(val tSec: Double, val bpm: Double)
 
+/** Inputs of the recording-quality report, read in chunks. */
+data class QualityPoint(val id: Long, val cleanedPpg: Double, val accMagnitude: Double, val bpm: Double?, val sqi: Double?)
+
 @Dao
 interface SampleDao {
     @Insert
@@ -48,6 +51,12 @@ interface SampleDao {
             "WHERE readingId = :readingId AND tSec >= :fromT AND tSec <= :toT"
     )
     suspend fun markLost(readingId: Long, fromT: Double, toT: Double)
+
+    @Query(
+        "SELECT id, cleanedPpg, accMagnitude, bpm, sqi FROM samples WHERE readingId = :readingId AND id > :afterId " +
+            "ORDER BY id ASC LIMIT :limit"
+    )
+    suspend fun getQualityChunk(readingId: Long, afterId: Long, limit: Int): List<QualityPoint>
 
     @Query("SELECT COUNT(*) FROM samples WHERE readingId = :readingId")
     suspend fun countForReading(readingId: Long): Int

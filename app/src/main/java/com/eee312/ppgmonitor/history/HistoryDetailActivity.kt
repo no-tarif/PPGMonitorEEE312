@@ -125,13 +125,6 @@ class HistoryDetailActivity : AppCompatActivity() {
                 finish()
                 return@launch
             }
-            // On-demand path for LEGACY readings (or anything else that
-            // predates a successful post-process pass): quality only,
-            // never SpO2 - see ReadingPostProcessor.computeQualityIfMissing.
-            if (r.qualityJson == null) {
-                ReadingPostProcessor.computeQualityIfMissing(applicationContext, r)
-                r = db.readingDao().getById(readingId) ?: r
-            }
             reading = r
             bindHeader(r)
             val bpm = loadWaveformAndBpm(r)
@@ -153,6 +146,21 @@ class HistoryDetailActivity : AppCompatActivity() {
                 bindRChart(windows)
                 bindPiChart(windows)
                 bindQualityTable(r)
+            }
+
+            // On-demand path for LEGACY readings (or anything else that
+            // predates a successful post-process pass): quality only, never
+            // SpO2 - see ReadingPostProcessor.computeQualityIfMissing. Runs
+            // AFTER the reading is on screen (it is not displayed unless
+            // SHOW_ADVANCED_METRICS), so a long reading still opens quickly.
+            if (r.qualityJson == null) {
+                ReadingPostProcessor.computeQualityIfMissing(applicationContext, r)
+                val updated = db.readingDao().getById(readingId)
+                if (updated != null && HistoryDisplayConfig.SHOW_ADVANCED_METRICS) {
+                    reading = updated
+                    tvQuality.text = "Recording quality: ${updated.qualityVerdict ?: "computing..."}"
+                    bindQualityTable(updated)
+                }
             }
         }
     }
@@ -242,7 +250,7 @@ class HistoryDetailActivity : AppCompatActivity() {
         // motion, finger off...) is a gap; rejected values (e.g. above 100 %)
         // are hollow points - shown, not hidden.
         val xs = FloatArray(windows.size) { windows[it].tSec.toFloat() }
-        val ys = FloatArray(windows.size) { windows[it].spo2.toFloat() }
+        val ys = FloatArray(windows.size) { (windows[it].spo2 ?: Double.NaN).toFloat() }
         val filled = BooleanArray(windows.size) { windows[it].valid }
         val warmupEnd = DEFAULT_WARMUP_SEC.toFloat()
         chartSpo2.setData(
@@ -256,10 +264,10 @@ class HistoryDetailActivity : AppCompatActivity() {
 
     private fun bindRChart(windows: List<Spo2WindowEntity>) {
         if (windows.isEmpty()) return
-        val finite = windows.filter { it.r.isFinite() }
+        val finite = windows.filter { it.r?.isFinite() == true }
         if (finite.isEmpty()) return
         val xs = FloatArray(finite.size) { finite[it].tSec.toFloat() }
-        val ys = FloatArray(finite.size) { finite[it].r.toFloat() }
+        val ys = FloatArray(finite.size) { finite[it].r!!.toFloat() }
         chartR.setData(
             series = listOf(ChartSeries(xs, ys, ChannelColors.SPO2, LineStyle.SOLID)),
             hBands = listOf(ChartBand(0.4f, 1.0f))
@@ -268,19 +276,19 @@ class HistoryDetailActivity : AppCompatActivity() {
 
     private fun bindPiChart(windows: List<Spo2WindowEntity>) {
         if (windows.isEmpty()) return
-        val finiteIr = windows.filter { it.piIr.isFinite() }
-        val finiteRed = windows.filter { it.piRed.isFinite() }
+        val finiteIr = windows.filter { it.piIr?.isFinite() == true }
+        val finiteRed = windows.filter { it.piRed?.isFinite() == true }
         if (finiteIr.isEmpty() && finiteRed.isEmpty()) return
         chartPi.setData(
             series = listOf(
                 ChartSeries(
                     FloatArray(finiteIr.size) { finiteIr[it].tSec.toFloat() },
-                    FloatArray(finiteIr.size) { (finiteIr[it].piIr * 100).toFloat() },
+                    FloatArray(finiteIr.size) { (finiteIr[it].piIr!! * 100).toFloat() },
                     ChannelColors.IR, LineStyle.SOLID
                 ),
                 ChartSeries(
                     FloatArray(finiteRed.size) { finiteRed[it].tSec.toFloat() },
-                    FloatArray(finiteRed.size) { (finiteRed[it].piRed * 100).toFloat() },
+                    FloatArray(finiteRed.size) { (finiteRed[it].piRed!! * 100).toFloat() },
                     ChannelColors.RED, LineStyle.DASHED
                 )
             )

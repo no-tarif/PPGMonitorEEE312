@@ -95,8 +95,31 @@ object ReadingPostProcessor {
         if (reading.qualityJson != null) return
         withContext(Dispatchers.Default) {
             val db = AppDatabase.get(context)
-            val samples = db.sampleDao().getForReading(reading.id)
-            runQuality(db, reading.id, samples, reading.sampleRateHz)
+            // Chunked into plain arrays: a looped 12 h reading has 1.1 M
+            // samples, far too many to hold as SampleEntity objects.
+            val dao = db.sampleDao()
+            val n = dao.countForReading(reading.id)
+            if (n == 0) return@withContext
+            val cleaned = DoubleArray(n)
+            val accMag = DoubleArray(n)
+            val bpm = ArrayList<Double>()
+            val sqi = ArrayList<Double>()
+            var k = 0
+            var afterId = 0L
+            while (k < n) {
+                val chunk = dao.getQualityChunk(reading.id, afterId, 20_000)
+                if (chunk.isEmpty()) break
+                for (p in chunk) {
+                    if (k >= n) break
+                    cleaned[k] = p.cleanedPpg; accMag[k] = p.accMagnitude
+                    p.bpm?.let { bpm += it }
+                    p.sqi?.let { sqi += it }
+                    k++
+                }
+                afterId = chunk.last().id
+            }
+            val report = PpgQualityValidator.validate(cleaned.copyOf(k), accMag.copyOf(k), reading.sampleRateHz, bpm, sqi)
+            db.readingDao().updateQuality(reading.id, report.overall.name, qualityReportToJson(report).toString())
         }
     }
 
@@ -177,10 +200,10 @@ object ReadingPostProcessor {
                         Spo2WindowEntity(
                             readingId = readingId,
                             tSec = it.tSec,
-                            r = it.r,
-                            spo2 = it.spo2,
-                            piIr = it.piIr,
-                            piRed = it.piRed,
+                            r = it.r.takeIf { v -> v.isFinite() },
+                            spo2 = it.spo2.takeIf { v -> v.isFinite() },
+                            piIr = it.piIr.takeIf { v -> v.isFinite() },
+                            piRed = it.piRed.takeIf { v -> v.isFinite() },
                             valid = it.valid,
                             rejectReason = it.rejectReason
                         )

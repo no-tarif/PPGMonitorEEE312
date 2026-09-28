@@ -506,10 +506,17 @@ class MainActivity : AppCompatActivity() {
                 // keep running even if the activity is destroyed right
                 // after Stop is tapped.
                 CoroutineScope(Dispatchers.Default).launch {
-                    ReadingPostProcessor.process(
-                        applicationContext, result.readingId, sourceTypeAtStop,
-                        datasetIdAtStop, result.sampleRateHz, datasets, fileSpo2AtStop
-                    )
+                    // A failure here must never take the app down: the reading
+                    // (samples + BPM) is already saved; SpO2/quality just stay
+                    // uncomputed and are logged.
+                    try {
+                        ReadingPostProcessor.process(
+                            applicationContext, result.readingId, sourceTypeAtStop,
+                            datasetIdAtStop, result.sampleRateHz, datasets, fileSpo2AtStop
+                        )
+                    } catch (e: Exception) {
+                        android.util.Log.e("MainActivity", "Post-processing failed for reading ${result.readingId}", e)
+                    }
                 }
             }
             val base = tvStatus.text.toString()
