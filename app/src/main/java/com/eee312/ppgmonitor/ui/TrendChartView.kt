@@ -110,7 +110,7 @@ class TrendChartView @JvmOverloads constructor(
         var sMin = fixedYMin ?: Float.MAX_VALUE
         var sMax = fixedYMax ?: -Float.MAX_VALUE
         if (fixedYMin == null || fixedYMax == null) {
-            for (s in sharedSeries) for (y in s.ys) { if (y < sMin) sMin = y; if (y > sMax) sMax = y }
+            for (s in sharedSeries) for (y in s.ys) { if (y.isNaN()) continue; if (y < sMin) sMin = y; if (y > sMax) sMax = y }
             for (b in hBands) { if (b.yMin < sMin) sMin = b.yMin; if (b.yMax > sMax) sMax = b.yMax }
             for (r in refLines) { if (r.y < sMin) sMin = r.y; if (r.y > sMax) sMax = r.y }
         }
@@ -139,7 +139,7 @@ class TrendChartView @JvmOverloads constructor(
             if (s.independentScale) {
                 var mn = Float.MAX_VALUE
                 var mx = -Float.MAX_VALUE
-                for (y in s.ys) { if (y < mn) mn = y; if (y > mx) mx = y }
+                for (y in s.ys) { if (y.isNaN()) continue; if (y < mn) mn = y; if (y > mx) mx = y }
                 if (mn > mx) { mn = 0f; mx = 1f }
                 localMin = mn; localMax = mx
             } else {
@@ -158,6 +158,7 @@ class TrendChartView @JvmOverloads constructor(
                 var prevX = Float.NaN
                 var prevY = Float.NaN
                 for (i in s.xs.indices) {
+                    if (s.ys[i].isNaN()) { prevX = Float.NaN; continue } // gap
                     val px = xPix(s.xs[i])
                     val py = yPix(s.ys[i])
                     if (!prevX.isNaN()) canvas.drawLine(prevX, prevY, px, py, linePaint)
@@ -168,6 +169,7 @@ class TrendChartView @JvmOverloads constructor(
             s.markerFilled?.let { flags ->
                 markerPaint.color = s.color
                 for (i in s.xs.indices) {
+                    if (s.ys[i].isNaN()) continue
                     val px = xPix(s.xs[i])
                     val py = yPix(s.ys[i])
                     if (i < flags.size && flags[i]) {

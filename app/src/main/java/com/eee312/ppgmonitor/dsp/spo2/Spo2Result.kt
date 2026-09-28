@@ -12,7 +12,20 @@ enum class Spo2RejectReason {
     /** Curve output (after any calibration) exceeded cfg.validSpo2Range's upper bound. */
     ABOVE_100,
     /** Curve output (after any calibration) fell below cfg.validSpo2Range's lower bound. */
-    BELOW_70
+    BELOW_70,
+    // --- v3 quality gates (appended: this enum is stored by name) ---
+    /** The window holds filled / lost / settling samples (dropout filler). */
+    DROPOUT,
+    /** A channel reached the ADC rail in this window. */
+    SATURATED,
+    /** Mean IR below the finger-present level (live rig only). */
+    FINGER_OFF,
+    /** Band-passed red and IR don't move together (corr < cfg.minCorrelation). */
+    LOW_CORRELATION,
+    /** Accelerometer shows real movement during the window. */
+    MOTION,
+    /** Fewer than cfg.minBeats pulse peaks in the window. */
+    TOO_FEW_BEATS
 }
 
 /**
@@ -36,7 +49,8 @@ data class Spo2Summary(
     val windows: Int,
     val accepted: Int,
     val acceptedPct: Double,
-    /** Null when accepted == 0. */
+    /** Median of the valid windows; null when fewer than
+     * Spo2Config.minValidWindows are valid (shown as N/A). */
     val medianAcceptedSpo2: Double?,
     val minAcceptedSpo2: Double?,
     val maxAcceptedSpo2: Double?,
@@ -53,7 +67,11 @@ data class Spo2Summary(
     /** Plain-language explanation of what the numbers above mean,
      * reproducing (and in the ABOVE_100-dominant case, sharpening)
      * estimate_spo2.m's printed warnings - see Spo2Engine.buildDiagnosis. */
-    val diagnosis: String
+    val diagnosis: String,
+    /** v3: windows whose curve value was above 100 % (rejected, not hidden:
+     * they stay in the window table with their raw value), and the highest. */
+    val above100Count: Int = 0,
+    val maxRawSpo2: Double = Double.NaN
 )
 
 sealed class Spo2Result {

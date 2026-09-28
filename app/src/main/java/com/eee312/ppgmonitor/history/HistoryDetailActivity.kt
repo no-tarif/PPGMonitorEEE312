@@ -238,10 +238,12 @@ class HistoryDetailActivity : AppCompatActivity() {
 
     private fun bindSpo2Chart(windows: List<Spo2WindowEntity>) {
         if (windows.isEmpty()) return
-        val finite = windows.filter { it.spo2.isFinite() }
-        val xs = FloatArray(finite.size) { finite[it].tSec.toFloat() }
-        val ys = FloatArray(finite.size) { finite[it].spo2.toFloat() }
-        val filled = BooleanArray(finite.size) { finite[it].valid }
+        // Every window: a window rejected before a value existed (dropout,
+        // motion, finger off...) is a gap; rejected values (e.g. above 100 %)
+        // are hollow points - shown, not hidden.
+        val xs = FloatArray(windows.size) { windows[it].tSec.toFloat() }
+        val ys = FloatArray(windows.size) { windows[it].spo2.toFloat() }
+        val filled = BooleanArray(windows.size) { windows[it].valid }
         val warmupEnd = DEFAULT_WARMUP_SEC.toFloat()
         chartSpo2.setData(
             series = listOf(ChartSeries(xs, ys, ChannelColors.SPO2, LineStyle.SOLID, markerFilled = filled)),
@@ -377,6 +379,7 @@ class HistoryDetailActivity : AppCompatActivity() {
         Spo2Status.SINGLE_WAVELENGTH -> "N/A (no red channel)"
         Spo2Status.TOO_SHORT -> "N/A (recording too short)"
         Spo2Status.NO_VALID_WINDOWS -> "N/A (no valid windows)"
+        Spo2Status.FEW_VALID_WINDOWS -> "N/A (fewer than 3 valid windows)"
     }
 
     private fun fmt(v: Double?) = v?.let { "%.0f".format(it) } ?: "--"
@@ -387,8 +390,8 @@ class HistoryDetailActivity : AppCompatActivity() {
         Spo2Status.NOT_ELIGIBLE -> "SpO2: not computed for this source"
         Spo2Status.SINGLE_WAVELENGTH -> "SpO2: N/A — single wavelength"
         Spo2Status.TOO_SHORT -> "SpO2: recording too short for one analysis window"
-        Spo2Status.NO_VALID_WINDOWS -> {
-            "SpO2: no valid windows" +
+        Spo2Status.NO_VALID_WINDOWS, Spo2Status.FEW_VALID_WINDOWS -> {
+            "SpO2: N/A - ${if (r.spo2Status == Spo2Status.FEW_VALID_WINDOWS) "fewer than 3" else "no"} valid windows" +
                 (r.rMedian?.let { " (median R %.3f)".format(it) } ?: "")
         }
         Spo2Status.OK -> buildString {
@@ -414,7 +417,9 @@ class HistoryDetailActivity : AppCompatActivity() {
         val menu = PopupMenu(this, btnOptions)
         menu.menu.add("Rename")
         menu.menu.add("Delete")
-        if (r.spo2Status == Spo2Status.OK || r.spo2Status == Spo2Status.NO_VALID_WINDOWS) {
+        if (r.spo2Status == Spo2Status.OK || r.spo2Status == Spo2Status.NO_VALID_WINDOWS ||
+            r.spo2Status == Spo2Status.FEW_VALID_WINDOWS
+        ) {
             menu.menu.add("Calibrate against reference oximeter…")
             if (r.spo2CalibrationInfo != null) menu.menu.add("Remove calibration")
         }

@@ -19,5 +19,9 @@ enum class Spo2Status {
      * legacy compute path. */
     LEGACY,
     /** Batch pass has been kicked off but hasn't finished yet. */
-    PENDING
+    PENDING,
+    /** v3 (appended - stored by name): the pass ran but fewer than
+     * Spo2Config.minValidWindows (3) windows were valid, so no summary
+     * SpO2 is given. */
+    FEW_VALID_WINDOWS
 }

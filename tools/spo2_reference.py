@@ -22,6 +22,26 @@ that file's header for the full explanation of WHY):
      added to every SpO2 (slope unchanged).
   5. Validity after calibration: 70 <= SpO2 <= 100.
 
+v3 ADDITIONS (app v3, Phase 7 - deliberate method changes, mirrored
+exactly in dsp/spo2/Spo2Engine.kt; see docs/SPO2_METHOD.md). Extra
+per-window quality gates, checked after the perfusion check and before
+the R range (R is still stored for these windows, SpO2 is not):
+  - correlation: Pearson r of the band-passed red and IR in the window must
+    be >= min_correlation (0.8): the two channels must pulse together;
+  - motion: SD of the accelerometer magnitude in the window must be
+    <= max_motion_fraction (0.10) x the recording's median magnitude
+    (= gravity in whatever unit the file uses); skipped without an
+    accelerometer;
+  - beats: >= min_beats (6) pulse peaks in the band-passed IR window
+    (positive local maxima >= 0.27 s apart, see count_beats);
+  - (app only, not in this script: dropout-flagged windows, the rig's
+    ADC-rail and finger-off levels - these need data this script doesn't have.)
+Summary SpO2 = median of the valid windows only, and N/A when fewer than
+min_valid_windows (3) are valid.
+On sep16 none of the new gates fires (correlation 0.93-0.96, 14-21 beats
+per window, motion <= 9 % of g), so its golden window tables keep their
+values; they gain a `reason` column.
+
 Re-run standalone:  python tools/spo2_reference.py
 """
 
@@ -67,6 +87,12 @@ class Spo2Config:
     window_sec: float = 12.0
     step_sec: float = 2.0
     single_point: SinglePointCalibration = field(default_factory=SinglePointCalibration)
+    # v3 gates (mirror Spo2Config.kt)
+    min_correlation: float = 0.8
+    min_beats: int = 6
+    min_beat_spacing_sec: float = 0.27
+    max_motion_fraction: float = 0.10
+    min_valid_windows: int = 3
 
 
 def spo2_curve(r: np.ndarray | float, calibration: str) -> np.ndarray | float:
@@ -92,11 +118,40 @@ def bandpass_zero_phase(x: np.ndarray, fs: float, band_hz: tuple[float, float], 
 # Core algorithm - one-to-one port of estimate_spo2.m
 # ---------------------------------------------------------------------------
 
-def estimate_spo2(ir_raw: np.ndarray, red_raw: np.ndarray, fs: float, cfg: Spo2Config) -> pd.DataFrame:
+def count_beats(x: np.ndarray, min_gap: int) -> int:
+    """Positive local maxima at least min_gap samples apart; a higher peak
+    inside the gap replaces the previous one (Spo2Engine.countBeats)."""
+    count = 0
+    last = -1_000_000
+    for i in range(1, len(x) - 1):
+        if x[i] > x[i - 1] and x[i] >= x[i + 1] and x[i] > 0:
+            if i - last >= min_gap:
+                count += 1
+                last = i
+            elif x[i] > x[last]:
+                last = i
+    return count
+
+
+def window_correlation(a: np.ndarray, b: np.ndarray) -> float:
+    da = a - a.mean()
+    db = b - b.mean()
+    saa = float((da * da).sum())
+    sbb = float((db * db).sum())
+    if saa <= 0 or sbb <= 0:
+        return 0.0
+    return float((da * db).sum() / np.sqrt(saa * sbb))
+
+
+def estimate_spo2(ir_raw: np.ndarray, red_raw: np.ndarray, fs: float, cfg: Spo2Config,
+                  acc_mag: np.ndarray | None = None) -> pd.DataFrame:
     ir_raw = np.asarray(ir_raw, dtype=float)
     red_raw = np.asarray(red_raw, dtype=float)
     n = min(len(ir_raw), len(red_raw))
     ir_raw, red_raw = ir_raw[:n], red_raw[:n]
+    if acc_mag is not None:
+        acc_mag = np.asarray(acc_mag, dtype=float)
+        acc_mag = acc_mag[:n] if len(acc_mag) >= n else None
 
     win_samples = round(cfg.window_sec * fs)
     step_samples = round(cfg.step_sec * fs)
@@ -109,6 +164,8 @@ def estimate_spo2(ir_raw: np.ndarray, red_raw: np.ndarray, fs: float, cfg: Spo2C
     if n_skip > 0:
         ir_raw = ir_raw[n_skip:]
         red_raw = red_raw[n_skip:]
+        if acc_mag is not None:
+            acc_mag = acc_mag[n_skip:]
         n = len(ir_raw)
 
     if n < win_samples:
@@ -124,6 +181,12 @@ def estimate_spo2(ir_raw: np.ndarray, red_raw: np.ndarray, fs: float, cfg: Spo2C
     spo2_arr = np.full(n_rows, np.nan)
     pi_ir = np.full(n_rows, np.nan)
     pi_red = np.full(n_rows, np.nan)
+    reason = ["NONE"] * n_rows
+    min_gap = max(1, round(cfg.min_beat_spacing_sec * fs))
+    gravity = None
+    if acc_mag is not None:
+        g = float(np.median(acc_mag))
+        gravity = g if g > 1e-6 else None
 
     for row in range(n_rows):
         start = row * step_samples
@@ -133,15 +196,28 @@ def estimate_spo2(ir_raw: np.ndarray, red_raw: np.ndarray, fs: float, cfg: Spo2C
         dc_ir = ir_raw[idx].mean()
         dc_red = red_raw[idx].mean()
         if dc_ir <= 0 or dc_red <= 0:
+            reason[row] = "NON_POSITIVE_DC"
             continue
 
         pi_ir[row] = ir_ac[idx].std(ddof=1) / dc_ir
         pi_red[row] = red_ac[idx].std(ddof=1) / dc_red
         if pi_ir[row] < cfg.min_perfusion or pi_red[row] < cfg.min_perfusion:
+            reason[row] = "LOW_PERFUSION"
             continue
 
         r_arr[row] = pi_red[row] / pi_ir[row]
+        # v3 gates (R kept, SpO2 not computed)
+        if window_correlation(ir_ac[idx], red_ac[idx]) < cfg.min_correlation:
+            reason[row] = "LOW_CORRELATION"
+            continue
+        if gravity is not None and acc_mag[idx].std(ddof=1) > cfg.max_motion_fraction * gravity:
+            reason[row] = "MOTION"
+            continue
+        if count_beats(ir_ac[idx], min_gap) < cfg.min_beats:
+            reason[row] = "TOO_FEW_BEATS"
+            continue
         if r_arr[row] < cfg.valid_r_range[0] or r_arr[row] > cfg.valid_r_range[1]:
+            reason[row] = "R_OUT_OF_RANGE"
             continue
 
         spo2_arr[row] = spo2_curve(r_arr[row], cfg.calibration)
@@ -171,10 +247,13 @@ def estimate_spo2(ir_raw: np.ndarray, red_raw: np.ndarray, fs: float, cfg: Spo2C
                 )
 
     valid = np.isfinite(spo2_arr) & (spo2_arr >= cfg.valid_range[0]) & (spo2_arr <= cfg.valid_range[1])
+    for row in range(n_rows):
+        if reason[row] == "NONE" and np.isfinite(spo2_arr[row]) and not valid[row]:
+            reason[row] = "ABOVE_100" if spo2_arr[row] > cfg.valid_range[1] else "BELOW_70"
 
     table = pd.DataFrame({
         "time_s": time_s, "R": r_arr, "SpO2_percent": spo2_arr,
-        "PI_IR": pi_ir, "PI_RED": pi_red, "valid": valid,
+        "PI_IR": pi_ir, "PI_RED": pi_red, "valid": valid, "reason": reason,
     })
     table.attrs["calibrationOffset"] = cal_offset
     table.attrs["calibrationInfo"] = cal_info
@@ -206,12 +285,12 @@ def print_report(table: pd.DataFrame, cfg: Spo2Config, label: str) -> None:
         print(f"Median perfusion index: IR {100 * table['PI_IR'].median():.4f}%   "
               f"RED {100 * table['PI_RED'].median():.4f}%")
         print(f"Median R              : {table['R'].median():.4f}  (SD {table['R'].std():.4f})")
-        if n_valid:
+        if n_valid >= cfg.min_valid_windows:
             acc = table[table["valid"]]
             print(f"Accepted SpO2         : median {acc['SpO2_percent'].median():.1f}%  "
                   f"range {acc['SpO2_percent'].min():.1f}-{acc['SpO2_percent'].max():.1f}%")
         else:
-            print("Accepted SpO2         : no valid windows")
+            print(f"Accepted SpO2         : N/A ({n_valid} valid window(s), need {cfg.min_valid_windows})")
     print(f"{'=' * 60}\n")
 
 
@@ -236,7 +315,16 @@ def load_sep16_native_repaired() -> tuple[np.ndarray, np.ndarray, float]:
     df = pd.read_csv(SEP16_CAPTURE_CSV)
     df = df.assign(time_s=repair_sep16_timestamps(df["time_s"].to_numpy(dtype=float)))
     df = df.iloc[1:].reset_index(drop=True)
-    return df["ir"].to_numpy(dtype=float), df["red"].to_numpy(dtype=float), SEP16_SOURCE_FS_HZ
+    return df["ir"].to_numpy(dtype=float), df["red"].to_numpy(dtype=float), SEP16_SOURCE_FS_HZ, acc_magnitude(df)
+
+
+def acc_magnitude(df: pd.DataFrame) -> np.ndarray:
+    """|acc| from float32 axes, the way the app computes it
+    (MainActivity: sqrt of the Float axes widened to double)."""
+    ax = df["accX"].to_numpy(dtype=np.float32).astype(float)
+    ay = df["accY"].to_numpy(dtype=np.float32).astype(float)
+    az = df["accZ"].to_numpy(dtype=np.float32).astype(float)
+    return np.sqrt(ax * ax + ay * ay + az * az)
 
 
 def load_sep16_25hz_asset() -> tuple[np.ndarray, np.ndarray, float]:
@@ -246,7 +334,7 @@ def load_sep16_25hz_asset() -> tuple[np.ndarray, np.ndarray, float]:
     if not path.exists():
         sys.exit(f"{path} not found - run tools/prepare_datasets.py first")
     df = pd.read_csv(path)
-    return df["ir"].to_numpy(dtype=float), df["red"].to_numpy(dtype=float), 25.0
+    return df["ir"].to_numpy(dtype=float), df["red"].to_numpy(dtype=float), 25.0, acc_magnitude(df)
 
 
 def load_matlab_wrongly_split_segment() -> tuple[np.ndarray, np.ndarray, float]:
@@ -268,25 +356,25 @@ def main() -> None:
     GOLDEN_DIR.mkdir(parents=True, exist_ok=True)
 
     # --- (a) repaired native-rate sep16, default config ---
-    ir_a, red_a, fs_a = load_sep16_native_repaired()
+    ir_a, red_a, fs_a, acc_a = load_sep16_native_repaired()
     cfg_default = Spo2Config()
-    table_a = estimate_spo2(ir_a, red_a, fs_a, cfg_default)
+    table_a = estimate_spo2(ir_a, red_a, fs_a, cfg_default, acc_a)
     print_report(table_a, cfg_default, f"sep16 repaired, {fs_a:.4f} Hz")
     table_a.to_csv(GOLDEN_DIR / "spo2_sep16_16667hz.csv", index=False)
 
     # --- (a) one-point calibration, ref=98 ---
     cfg_cal = Spo2Config(single_point=SinglePointCalibration(enable=True, ref_spo2=98.0))
-    table_a_cal = estimate_spo2(ir_a, red_a, fs_a, cfg_cal)
+    table_a_cal = estimate_spo2(ir_a, red_a, fs_a, cfg_cal, acc_a)
     print_report(table_a_cal, cfg_cal, f"sep16 repaired, {fs_a:.4f} Hz, calibrated ref=98")
 
     # --- (b) shipped 25Hz asset, default config ---
-    ir_b, red_b, fs_b = load_sep16_25hz_asset()
-    table_b = estimate_spo2(ir_b, red_b, fs_b, cfg_default)
+    ir_b, red_b, fs_b, acc_b = load_sep16_25hz_asset()
+    table_b = estimate_spo2(ir_b, red_b, fs_b, cfg_default, acc_b)
     print_report(table_b, cfg_default, f"hw_sep16.csv (shipped asset), {fs_b} Hz")
     table_b.to_csv(GOLDEN_DIR / "spo2_sep16_25hz.csv", index=False)
 
     # --- (b) one-point calibration, ref=98 ---
-    table_b_cal = estimate_spo2(ir_b, red_b, fs_b, cfg_cal)
+    table_b_cal = estimate_spo2(ir_b, red_b, fs_b, cfg_cal, acc_b)
     print_report(table_b_cal, cfg_cal, f"hw_sep16.csv (shipped asset), {fs_b} Hz, calibrated ref=98")
 
     # --- Cross-check against MATLAB's wrongly-split first segment ---

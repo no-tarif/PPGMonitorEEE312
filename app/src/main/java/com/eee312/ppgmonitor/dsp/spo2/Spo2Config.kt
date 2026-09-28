@@ -45,7 +45,23 @@ data class Spo2Config(
     val validRRange: Pair<Double, Double> = 0.3 to 3.0,
     val validSpo2Range: Pair<Double, Double> = 70.0 to 100.0,
     val curve: Spo2Curve = Spo2Curve.LINEAR,
-    val singlePoint: Spo2SinglePointCalibration = Spo2SinglePointCalibration()
+    val singlePoint: Spo2SinglePointCalibration = Spo2SinglePointCalibration(),
+    // --- v3 quality gates (see docs/SPO2_METHOD.md) ---
+    /** Pearson correlation of band-passed red vs IR in the window. */
+    val minCorrelation: Double = 0.8,
+    /** Pulse peaks in a 12 s window (40 BPM gives 8). */
+    val minBeats: Int = 6,
+    /** Peaks closer than this are one beat (0.27 s = 222 BPM). */
+    val minBeatSpacingSec: Double = 0.27,
+    /** SD of |acc| in the window above this fraction of the recording's
+     * median |acc| (= gravity, any unit) is motion. */
+    val maxMotionFraction: Double = 0.10,
+    /** Summary SpO2 needs at least this many valid windows, else N/A. */
+    val minValidWindows: Int = 3,
+    /** Live rig only (null elsewhere): mean IR below this = finger off. */
+    val fingerPresentDc: Double? = null,
+    /** Live rig only (null elsewhere): raw at/above this = saturated. */
+    val saturationCounts: Double? = null
 ) {
     /** Upper band edge clamped below Nyquist, same convention as
      * estimate_spo2_from_table.m's use of cfg.ppgBandHz: min(4, 0.95*fs/2). */

@@ -36,6 +36,7 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import kotlinx.coroutines.withContext
+import com.eee312.ppgmonitor.dsp.spo2.LiveSpo2Guard
 import com.eee312.ppgmonitor.dsp.spo2.LiveSpo2Tracker
 import com.eee312.ppgmonitor.dsp.spo2.Spo2Config
 import com.eee312.ppgmonitor.dsp.spo2.Spo2Engine
@@ -103,6 +104,7 @@ class MainActivity : AppCompatActivity() {
     // at all, in which case tvSpo2Detail already shows a static reason
     // and handleSample() doesn't touch these fields.
     private var liveSpo2Tracker: LiveSpo2Tracker? = null
+    @Volatile private var liveSpo2Guard = LiveSpo2Guard()
 
     // Remembered alongside `recorder` purely so finalizeRecording() can
     // hand them to ReadingPostProcessor once the reading is saved -
@@ -338,8 +340,13 @@ class MainActivity : AppCompatActivity() {
      * only needs a yes/no + message, not the full Spo2Status enum a
      * saved reading uses). Never synthesises SpO2 for a source that
      * doesn't have a real second wavelength. */
+    /** The rig's finger-present / saturation gates apply to live ESP32 data. */
+    private fun spo2ConfigFor(sourceType: SourceType): Spo2Config =
+        ReadingPostProcessor.spo2ConfigFor(sourceType)
+
     private fun setUpLiveSpo2Tile(sourceType: SourceType, datasetId: String?, sampleRateHz: Double, filePlan: FilePlan?) {
         tvSpo2Live.text = "SpO2 —"
+        liveSpo2Guard = LiveSpo2Guard()
         val ineligibleReason = when (sourceType) {
             SourceType.SIMULATED -> "not computed for this source"
             SourceType.DATASET -> {
@@ -362,7 +369,7 @@ class MainActivity : AppCompatActivity() {
             liveSpo2Tracker = null
             tvSpo2Detail.text = ineligibleReason
         } else {
-            liveSpo2Tracker = LiveSpo2Tracker(sampleRateHz)
+            liveSpo2Tracker = LiveSpo2Tracker(sampleRateHz, spo2ConfigFor(sourceType))
             tvSpo2Detail.text = ""
         }
     }
@@ -370,23 +377,30 @@ class MainActivity : AppCompatActivity() {
     /** Runs off the main thread, per spec - launched from handleSample()
      * only once every ~2s (LiveSpo2Tracker.addSample gates this), never
      * per-sample. */
-    private fun updateLiveSpo2Tile(ir: DoubleArray, red: DoubleArray, fsHz: Double, cfg: Spo2Config) {
+    private fun updateLiveSpo2Tile(ir: DoubleArray, red: DoubleArray, acc: DoubleArray?, fsHz: Double, cfg: Spo2Config) {
+        val guard = liveSpo2Guard
         CoroutineScope(Dispatchers.Default).launch {
-            val result = Spo2Engine.estimate(ir, red, fsHz, cfg)
+            val result = Spo2Engine.estimate(ir, red, fsHz, cfg, null, acc)
             val (liveText, detailText) = when (result) {
-                is Spo2Result.NotAvailable -> "SpO2 —" to result.reason
+                is Spo2Result.NotAvailable -> "SpO2 --" to result.reason
                 is Spo2Result.Available -> {
                     val w = result.windows.firstOrNull()
-                    val live = if (w != null && w.valid) "SpO2 %.0f%%".format(w.spo2) else "SpO2 --"
-                    val detail = if (w != null && !w.r.isNaN()) {
-                        "R %.3f · PI_IR %.3f%% / PI_RED %.3f%%".format(w.r, 100 * w.piIr, 100 * w.piRed)
-                    } else {
-                        "low perfusion or non-positive DC this window"
+                    val shown = synchronized(guard) {
+                        if (w != null && w.valid) guard.onValid(w.spo2) else guard.onInvalid()
+                    }
+                    val live = shown?.let { "SpO2 %.0f%%".format(it) } ?: "SpO2 --"
+                    val detail = when {
+                        w == null -> ""
+                        !w.r.isNaN() -> "R %.3f · PI_IR %.3f%% / PI_RED %.3f%%".format(w.r, 100 * w.piIr, 100 * w.piRed) +
+                            if (!w.valid) " · rejected: ${w.rejectReason.name.lowercase().replace('_', ' ')}" else ""
+                        else -> "rejected: ${w.rejectReason.name.lowercase().replace('_', ' ')}"
                     }
                     live to detail
                 }
             }
             runOnUiThread {
+                // A result that arrives after Stop / a new session is dropped.
+                if (guard !== liveSpo2Guard || !running) return@runOnUiThread
                 tvSpo2Live.text = liveText
                 tvSpo2Detail.text = detailText
             }
@@ -540,7 +554,8 @@ class MainActivity : AppCompatActivity() {
         val p = slot.pipe
         if (p == null) {
             if (o.lostStarted) {
-                liveSpo2Tracker?.reset()
+                liveSpo2Tracker?.restart()
+                liveSpo2Guard.clear()
                 runOnUiThread {
                     tvStatus.text = "Signal lost - check sensor"
                     tvSpo2Live.text = "SpO2 --"
@@ -560,8 +575,16 @@ class MainActivity : AppCompatActivity() {
         recorder?.addSample(p.rawPpg, p.cleanedPpg, p.newHrBpm, p.sqi, accMagnitude, o.raw, o.flags)
 
         liveSpo2Tracker?.let { tracker ->
-            tracker.addSample(d.ir, d.red, o.flags)?.let { (ir, red) ->
-                updateLiveSpo2Tile(ir, red, activeSampleRateHz, tracker.liveConfig)
+            tracker.addSample(d.ir, d.red, o.flags, accMagnitude)?.let { snap ->
+                if (snap.excluded) {
+                    liveSpo2Guard.clear()
+                    runOnUiThread {
+                        tvSpo2Live.text = "SpO2 --"
+                        tvSpo2Detail.text = "window has dropouts - waiting for a clean 12 s"
+                    }
+                } else {
+                    updateLiveSpo2Tile(snap.ir, snap.red, snap.acc, activeSampleRateHz, tracker.liveConfig)
+                }
             }
         }
         updateDisplay(slot.tSec, p.cleanedPpg.toFloat(), p.sqi)
@@ -598,7 +621,7 @@ class MainActivity : AppCompatActivity() {
         val startSlot = Math.round((old?.slotCount ?: 0L) * measured / activeSampleRateHz)
         activeSampleRateHz = measured
         chain = newChain(measured, activeSourceType, old?.guard ?: BpmGuard(), startSlot)
-        if (liveSpo2Tracker != null) liveSpo2Tracker = LiveSpo2Tracker(measured)
+        if (liveSpo2Tracker != null) liveSpo2Tracker = LiveSpo2Tracker(measured, spo2ConfigFor(activeSourceType))
         runOnUiThread {
             tvStatus.text = "Sensor runs at %.2f Hz (not %.0f) - processing restarted at the measured rate"
                 .format(measured, HardwareProfile.NOMINAL_RATE_HZ)

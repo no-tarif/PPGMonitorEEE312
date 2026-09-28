@@ -56,6 +56,7 @@ class ReadingListAdapter(
             Spo2Status.SINGLE_WAVELENGTH -> "SpO2 1λ"
             Spo2Status.TOO_SHORT -> "SpO2 too short"
             Spo2Status.NO_VALID_WINDOWS -> "SpO2 no valid windows"
+            Spo2Status.FEW_VALID_WINDOWS -> "SpO2 N/A (<3 valid)"
             Spo2Status.OK -> "SpO2 %.0f%%".format(reading.spo2Median ?: Double.NaN)
         }
         val sqiPart = reading.meanSqi?.let { " · SQI %.0f%%".format(it * 100) } ?: ""

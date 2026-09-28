@@ -29,8 +29,8 @@ class LiveSpo2TrackerTest {
             if (snap != null) {
                 snapshotCount++
                 if (firstAtSample < 0) firstAtSample = i
-                assertEquals(300, snap.first.size) // windowSec(12) * fs(25)
-                assertEquals(300, snap.second.size)
+                assertEquals(300, snap.ir.size) // windowSec(12) * fs(25)
+                assertEquals(300, snap.red.size)
             }
         }
         // First snapshot no earlier than 42s worth of samples (index 1050).

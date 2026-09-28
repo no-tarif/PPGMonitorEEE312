@@ -14,6 +14,13 @@ import java.util.ArrayDeque
  * for Simulated, a worker thread for dataset/USB).
  */
 class LiveSpo2Tracker(private val fsHz: Double, private val cfg: Spo2Config = Spo2Config()) {
+
+    /** One due window. [excluded] = it held filled / lost / settling /
+     * saturated samples and must not be used (the tile shows "--"); then
+     * the arrays are empty. [acc] is the accelerometer magnitude (for the
+     * engine's motion gate), NaN-free or null. */
+    data class Snapshot(val ir: DoubleArray, val red: DoubleArray, val acc: DoubleArray?, val excluded: Boolean)
+
     private val windowSamples = Math.round(cfg.windowSec * fsHz).toInt().coerceAtLeast(2)
     private val stepSamples = Math.round(cfg.stepSec * fsHz).toInt().coerceAtLeast(1)
 
@@ -30,6 +37,7 @@ class LiveSpo2Tracker(private val fsHz: Double, private val cfg: Spo2Config = Sp
     // v3: dropout flags of the samples in the window - a window holding
     // any filled / lost / saturated sample is never used for SpO2.
     private val badBuf = ArrayDeque<Boolean>(windowSamples)
+    private val accBuf = ArrayDeque<Double>(windowSamples)
     private var badInWindow = 0
     private var totalSamples = 0L
     private var samplesSinceUpdate = 0
@@ -41,7 +49,7 @@ class LiveSpo2Tracker(private val fsHz: Double, private val cfg: Spo2Config = Sp
      * wavelength" instead (this class doesn't decide that itself, since
      * a single null shouldn't cause a live class to permanently mark a
      * whole session that way - see MainActivity's per-source check). */
-    fun addSample(ir: Int, red: Int?, flags: Int = 0): Pair<DoubleArray, DoubleArray>? {
+    fun addSample(ir: Int, red: Int?, flags: Int = 0, accMag: Double = Double.NaN): Snapshot? {
         totalSamples++
         if (red == null) return null
 
@@ -49,10 +57,12 @@ class LiveSpo2Tracker(private val fsHz: Double, private val cfg: Spo2Config = Sp
         irBuf.addLast(ir.toDouble())
         redBuf.addLast(red.toDouble())
         badBuf.addLast(bad)
+        accBuf.addLast(accMag)
         if (bad) badInWindow++
         while (irBuf.size > windowSamples) {
             irBuf.removeFirst()
             redBuf.removeFirst()
+            accBuf.removeFirst()
             if (badBuf.removeFirst()) badInWindow--
         }
 
@@ -62,21 +72,27 @@ class LiveSpo2Tracker(private val fsHz: Double, private val cfg: Spo2Config = Sp
         if (irBuf.size < windowSamples) return null
         if (samplesSinceUpdate < stepSamples) return null
         samplesSinceUpdate = 0
-        if (badInWindow > 0) { lastWindowExcluded = true; return null }
-        lastWindowExcluded = false
-
-        return irBuf.toDoubleArray() to redBuf.toDoubleArray()
+        if (badInWindow > 0) return Snapshot(DoubleArray(0), DoubleArray(0), null, excluded = true)
+        val acc = if (accBuf.all { it.isFinite() }) accBuf.toDoubleArray() else null
+        return Snapshot(irBuf.toDoubleArray(), redBuf.toDoubleArray(), acc, excluded = false)
     }
 
-    /** True when the last due window was skipped because it held filled /
-     * lost samples (the caller shows "--" instead of a stale value). */
-    @Volatile var lastWindowExcluded = false
-        private set
+    /** After a signal loss: drop the window contents (it must refill with
+     * clean samples) but don't repeat the session warm-up. */
+    fun restart() {
+        irBuf.clear()
+        redBuf.clear()
+        badBuf.clear()
+        accBuf.clear()
+        badInWindow = 0
+        samplesSinceUpdate = 0
+    }
 
     fun reset() {
         irBuf.clear()
         redBuf.clear()
         badBuf.clear()
+        accBuf.clear()
         badInWindow = 0
         totalSamples = 0
         samplesSinceUpdate = 0

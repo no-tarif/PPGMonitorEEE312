@@ -1,5 +1,6 @@
 package com.eee312.ppgmonitor.dsp.spo2
 
+import com.eee312.ppgmonitor.dsp.SampleFlags
 import kotlin.math.sqrt
 
 /**
@@ -23,11 +24,20 @@ import kotlin.math.sqrt
  */
 object Spo2Engine {
 
+    /**
+     * @param flags per-sample SampleFlags from the dropout filler (null =
+     *   none, e.g. a plain array in a test): any window holding a filled /
+     *   lost / settling / saturated sample is rejected (DROPOUT).
+     * @param accMag per-sample accelerometer magnitude (null or all ~0 =
+     *   no accelerometer: the motion gate is skipped).
+     */
     fun estimate(
         irRaw: DoubleArray,
         redRaw: DoubleArray?,
         fsHz: Double,
-        cfg: Spo2Config = Spo2Config()
+        cfg: Spo2Config = Spo2Config(),
+        flags: IntArray? = null,
+        accMag: DoubleArray? = null
     ): Spo2Result {
         if (redRaw == null || redRaw.isEmpty() || irRaw.isEmpty()) {
             return Spo2Result.NotAvailable(
@@ -39,6 +49,8 @@ object Spo2Engine {
         val n0 = minOf(irRaw.size, redRaw.size)
         var ir = irRaw.copyOf(n0)
         var red = redRaw.copyOf(n0)
+        var fl = flags?.copyOf(n0)
+        var acc = accMag?.let { if (it.size >= n0) it.copyOf(n0) else null }
         var n = n0
 
         val winSamples = Math.round(cfg.windowSec * fsHz).toInt()
@@ -53,6 +65,8 @@ object Spo2Engine {
         if (nSkip > 0) {
             ir = ir.copyOfRange(nSkip, n)
             red = red.copyOfRange(nSkip, n)
+            fl = fl?.copyOfRange(nSkip, n)
+            acc = acc?.copyOfRange(nSkip, n)
             n = ir.size
         }
 
@@ -70,16 +84,37 @@ object Spo2Engine {
 
         val nRows = (n - winSamples) / stepSamples + 1
         val rawWindows = ArrayList<Spo2Window>(nRows)
+        val minBeatGap = Math.round(cfg.minBeatSpacingSec * fsHz).toInt().coerceAtLeast(1)
+        // Gravity in the accelerometer's own unit (m/s^2 or g): motion is
+        // judged relative to it. No accelerometer -> no motion gate.
+        val gravity = acc?.let { medianOf(it) }?.takeIf { it > 1e-6 }
+        fun rejected(t: Double, r: Double, piIr: Double, piRed: Double, why: Spo2RejectReason) =
+            Spo2Window(t, r, Double.NaN, piIr, piRed, false, why)
 
         for (row in 0 until nRows) {
             val start = row * stepSamples
             val end = start + winSamples
             val tSec = timeOffset + (start + (winSamples - 1) / 2.0) / fsHz
 
+            if (fl != null && (start until end).any { fl[it] and SampleFlags.SPO2_EXCLUDE != 0 }) {
+                rawWindows += rejected(tSec, Double.NaN, Double.NaN, Double.NaN, Spo2RejectReason.DROPOUT)
+                continue
+            }
+            val sat = cfg.saturationCounts
+            if (sat != null && (start until end).any { ir[it] >= sat || red[it] >= sat }) {
+                rawWindows += rejected(tSec, Double.NaN, Double.NaN, Double.NaN, Spo2RejectReason.SATURATED)
+                continue
+            }
+
             val dcIr = mean(ir, start, end)
             val dcRed = mean(red, start, end)
             if (dcIr <= 0.0 || dcRed <= 0.0) {
                 rawWindows += Spo2Window(tSec, Double.NaN, Double.NaN, Double.NaN, Double.NaN, false, Spo2RejectReason.NON_POSITIVE_DC)
+                continue
+            }
+            val fingerDc = cfg.fingerPresentDc
+            if (fingerDc != null && dcIr < fingerDc) {
+                rawWindows += rejected(tSec, Double.NaN, Double.NaN, Double.NaN, Spo2RejectReason.FINGER_OFF)
                 continue
             }
 
@@ -91,6 +126,19 @@ object Spo2Engine {
             }
 
             val r = piRed / piIr
+            // v3 gates - R is kept (like the R-range reject) so it stays visible.
+            if (correlation(irAc, redAc, start, end) < cfg.minCorrelation) {
+                rawWindows += rejected(tSec, r, piIr, piRed, Spo2RejectReason.LOW_CORRELATION)
+                continue
+            }
+            if (gravity != null && acc != null && stdDev(acc, start, end) > cfg.maxMotionFraction * gravity) {
+                rawWindows += rejected(tSec, r, piIr, piRed, Spo2RejectReason.MOTION)
+                continue
+            }
+            if (countBeats(irAc, start, end, minBeatGap) < cfg.minBeats) {
+                rawWindows += rejected(tSec, r, piIr, piRed, Spo2RejectReason.TOO_FEW_BEATS)
+                continue
+            }
             if (r < cfg.validRRange.first || r > cfg.validRRange.second) {
                 rawWindows += Spo2Window(tSec, r, Double.NaN, piIr, piRed, false, Spo2RejectReason.R_OUT_OF_RANGE)
                 continue
@@ -157,13 +205,18 @@ object Spo2Engine {
         val medianPiIr = if (finitePiIr.isNotEmpty()) median(finitePiIr) else Double.NaN
         val medianPiRed = if (finitePiRed.isNotEmpty()) median(finitePiRed) else Double.NaN
 
+        val enough = accepted.size >= cfg.minValidWindows
+        val above = windows.filter { it.rejectReason == Spo2RejectReason.ABOVE_100 }
         return Spo2Summary(
             windows = nRows,
             accepted = accepted.size,
             acceptedPct = if (nRows > 0) 100.0 * accepted.size / nRows else 0.0,
-            medianAcceptedSpo2 = if (accepted.isNotEmpty()) median(accepted.map { it.spo2 }) else null,
-            minAcceptedSpo2 = accepted.minOfOrNull { it.spo2 },
-            maxAcceptedSpo2 = accepted.maxOfOrNull { it.spo2 },
+            // median of the VALID windows only; N/A below minValidWindows
+            medianAcceptedSpo2 = if (enough) median(accepted.map { it.spo2 }) else null,
+            minAcceptedSpo2 = if (enough) accepted.minOfOrNull { it.spo2 } else null,
+            maxAcceptedSpo2 = if (enough) accepted.maxOfOrNull { it.spo2 } else null,
+            above100Count = above.size,
+            maxRawSpo2 = above.maxOfOrNull { it.spo2 } ?: Double.NaN,
             medianR = medianR,
             sdR = sdR,
             medianPiIr = medianPiIr,
@@ -221,6 +274,11 @@ object Spo2Engine {
             }
         }
 
+        if (!medianR.isNaN() && medianR > 1.2 && !medianPiIr.isNaN() && medianPiIr >= 0.001) {
+            parts += ("Median R = %.2f is well above the 0.4-0.8 expected at rest. Check that the red and IR " +
+                "channels are not swapped (firmware sends ir first, red second).").format(medianR)
+        }
+
         if (!medianPiIr.isNaN() && medianPiIr < 0.005) {
             parts += ("PI_IR = %.4f%% is low (a well-perfused fingertip typically gives 0.5-2%%). Low perfusion " +
                 "degrades both channels and makes R noisier - common causes: sensor too tight (occluding " +
@@ -232,6 +290,39 @@ object Spo2Engine {
             parts += "Perfusion and window-acceptance rate are within expected bounds."
         }
         return parts.joinToString(" ")
+    }
+
+    /** Pearson correlation of two signals over [start, end). */
+    private fun correlation(a: DoubleArray, b: DoubleArray, start: Int, end: Int): Double {
+        val ma = mean(a, start, end)
+        val mb = mean(b, start, end)
+        var sab = 0.0; var saa = 0.0; var sbb = 0.0
+        for (i in start until end) {
+            val da = a[i] - ma; val db = b[i] - mb
+            sab += da * db; saa += da * da; sbb += db * db
+        }
+        return if (saa <= 0.0 || sbb <= 0.0) 0.0 else sab / sqrt(saa * sbb)
+    }
+
+    /** Pulse peaks in the band-passed signal: positive local maxima at
+     * least [minGap] samples apart (a higher peak inside the gap replaces
+     * the previous one). Same rule as tools/spo2_reference.py count_beats. */
+    private fun countBeats(x: DoubleArray, start: Int, end: Int, minGap: Int): Int {
+        var count = 0
+        var last = -1_000_000
+        for (i in start + 1 until end - 1) {
+            if (x[i] > x[i - 1] && x[i] >= x[i + 1] && x[i] > 0) {
+                if (i - last >= minGap) { count++; last = i } else if (x[i] > x[last]) last = i
+            }
+        }
+        return count
+    }
+
+    private fun medianOf(x: DoubleArray): Double {
+        if (x.isEmpty()) return Double.NaN
+        val s = x.copyOf().also { it.sort() }
+        val m = s.size / 2
+        return if (s.size % 2 == 0) (s[m - 1] + s[m]) / 2.0 else s[m]
     }
 
     private fun mean(x: DoubleArray, start: Int, end: Int): Double {

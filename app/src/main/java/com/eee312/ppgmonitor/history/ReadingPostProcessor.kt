@@ -1,6 +1,9 @@
 package com.eee312.ppgmonitor.history
 
 import android.content.Context
+import android.util.Log
+import com.eee312.ppgmonitor.dsp.SampleFlags
+import com.eee312.ppgmonitor.sensor.HardwareProfile
 import com.eee312.ppgmonitor.dataset.DatasetInfo
 import com.eee312.ppgmonitor.dsp.quality.PpgQualityValidator
 import com.eee312.ppgmonitor.dsp.quality.QualityReport
@@ -52,7 +55,7 @@ object ReadingPostProcessor {
         if (terminalStatus != null) {
             db.readingDao().updateSpo2Status(readingId, terminalStatus)
         } else {
-            runSpo2(db, readingId, samples, sampleRateHz, Spo2Config())
+            runSpo2(db, readingId, samples, sampleRateHz, spo2ConfigFor(sourceType))
         }
 
         runQuality(db, readingId, samples, sampleRateHz)
@@ -66,9 +69,23 @@ object ReadingPostProcessor {
     suspend fun recomputeSpo2(context: Context, readingId: Long, fsHz: Double, cfg: Spo2Config) =
         withContext(Dispatchers.Default) {
             val db = AppDatabase.get(context)
+            val reading = db.readingDao().getById(readingId)
             val samples = db.sampleDao().getForReading(readingId)
-            runSpo2(db, readingId, samples, fsHz, cfg)
+            // keep the source's own gates; the caller only changes calibration
+            val base = reading?.let { spo2ConfigFor(it.sourceType) } ?: Spo2Config()
+            runSpo2(db, readingId, samples, fsHz, base.copy(singlePoint = cfg.singlePoint))
         }
+
+    /** SpO2 settings per source: the live ESP32 rig also gets the
+     * finger-present and ADC-rail gates (HardwareProfile); recorded data
+     * (other units) does not. */
+    fun spo2ConfigFor(sourceType: SourceType): Spo2Config =
+        if (sourceType == SourceType.ESP32_USB || sourceType == SourceType.ESP32_BLE) {
+            Spo2Config(
+                fingerPresentDc = HardwareProfile.FINGER_PRESENT_IR.toDouble(),
+                saturationCounts = HardwareProfile.SATURATION_COUNTS.toDouble()
+            )
+        } else Spo2Config()
 
     /** Computes and caches the quality report for a reading that doesn't
      * have one yet - the on-demand path for LEGACY readings (recorded
@@ -118,11 +135,37 @@ object ReadingPostProcessor {
         fsHz: Double,
         cfg: Spo2Config
     ) {
-        val ir = DoubleArray(samples.size) { (samples[it].irRaw ?: 0).toInt().toDouble() }
-        val hasRed = samples.isNotEmpty() && samples.none { it.redRaw == null }
-        val red = if (hasRed) DoubleArray(samples.size) { samples[it].redRaw!!.toDouble() } else null
+        // Raw received values (DC intact). A slot with no received value
+        // (inserted gap, or a single missing red cell) carries the previous
+        // value for filter continuity and is flagged, so its windows are
+        // rejected (DROPOUT) - one missing red sample no longer marks the
+        // whole reading "single wavelength".
+        val n = samples.size
+        val ir = DoubleArray(n)
+        val redArr = DoubleArray(n)
+        val flags = IntArray(n)
+        var lastIr = Double.NaN
+        var lastRed = Double.NaN
+        for (i in 0 until n) {
+            val s = samples[i]
+            var f = s.flags ?: 0
+            val irV = s.irRaw?.toDouble() ?: if (s.flags == null) s.rawPpg else Double.NaN
+            if (irV.isNaN()) f = f or SampleFlags.INSERTED else lastIr = irV
+            val redV = s.redRaw?.toDouble() ?: Double.NaN
+            if (redV.isNaN()) f = f or SampleFlags.INSERTED else lastRed = redV
+            ir[i] = if (irV.isNaN()) lastIr else irV
+            redArr[i] = if (redV.isNaN()) lastRed else redV
+            flags[i] = f
+        }
+        // leading gaps (before the first value): take the first value seen
+        val firstIr = ir.firstOrNull { !it.isNaN() } ?: 0.0
+        val firstRed = redArr.firstOrNull { !it.isNaN() } ?: 0.0
+        for (i in 0 until n) { if (ir[i].isNaN()) ir[i] = firstIr; if (redArr[i].isNaN()) redArr[i] = firstRed }
+        val hasRed = samples.any { it.redRaw != null }
+        val red = if (hasRed) redArr else null
+        val accMag = DoubleArray(n) { samples[it].accMagnitude }
 
-        when (val result = Spo2Engine.estimate(ir, red, fsHz, cfg)) {
+        when (val result = Spo2Engine.estimate(ir, red, fsHz, cfg, flags, accMag)) {
             is Spo2Result.NotAvailable -> {
                 val status = if (red == null) Spo2Status.SINGLE_WAVELENGTH else Spo2Status.TOO_SHORT
                 db.readingDao().updateSpo2Status(readingId, status)
@@ -143,7 +186,20 @@ object ReadingPostProcessor {
                         )
                     }
                 )
-                val status = if (result.summary.accepted > 0) Spo2Status.OK else Spo2Status.NO_VALID_WINDOWS
+                val status = when {
+                    result.summary.accepted >= cfg.minValidWindows -> Spo2Status.OK
+                    result.summary.accepted > 0 -> Spo2Status.FEW_VALID_WINDOWS
+                    else -> Spo2Status.NO_VALID_WINDOWS
+                }
+                if (result.summary.above100Count > 0) {
+                    // Rejected, not hidden: the windows keep their raw value in
+                    // spo2_windows and show as hollow points above 100 %.
+                    Log.i(
+                        "ReadingPostProcessor",
+                        "Reading $readingId: ${result.summary.above100Count} window(s) above 100 % " +
+                            "(max raw %.1f %%, median R %.3f)".format(result.summary.maxRawSpo2, result.summary.medianR)
+                    )
+                }
                 db.readingDao().updateSpo2Summary(
                     id = readingId,
                     status = status,
